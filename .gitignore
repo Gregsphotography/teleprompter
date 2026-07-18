@@ -22,3 +22,7 @@ Thumbs.db
 *.sln
 *.sw?
 /.env
+
+# Playwright output
+test-results/
+playwright-report/

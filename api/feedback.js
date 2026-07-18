@@ -1,7 +1,40 @@
 const MAX_NAME_LENGTH = 120;
 const MAX_EMAIL_LENGTH = 254;
 const MAX_MESSAGE_LENGTH = 4000;
+const MAX_BODY_BYTES = 16 * 1024;
 const MAILGUN_ENDPOINT = 'https://api.eu.mailgun.net/v3';
+
+// Best-effort per-IP rate limit. Serverless instances don't share memory, so
+// this only bounds abuse per warm instance — combined with the honeypot it
+// keeps casual spam out without external dependencies.
+const RATE_LIMIT_MAX = 5;
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+const rateBuckets = new Map();
+
+function isRateLimited(ip) {
+  const now = Date.now();
+  if (rateBuckets.size > 1000) {
+    for (const [key, bucket] of rateBuckets) {
+      if (now - bucket.start > RATE_LIMIT_WINDOW_MS) rateBuckets.delete(key);
+    }
+  }
+
+  const bucket = rateBuckets.get(ip);
+  if (!bucket || now - bucket.start > RATE_LIMIT_WINDOW_MS) {
+    rateBuckets.set(ip, { start: now, count: 1 });
+    return false;
+  }
+  bucket.count += 1;
+  return bucket.count > RATE_LIMIT_MAX;
+}
+
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.socket?.remoteAddress || 'unknown';
+}
 
 function sendJson(res, statusCode, body) {
   res.statusCode = statusCode;
@@ -27,8 +60,14 @@ async function readJsonBody(req) {
   }
 
   const chunks = [];
+  let total = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buf.length;
+    if (total > MAX_BODY_BYTES) {
+      throw new Error('Body too large');
+    }
+    chunks.push(buf);
   }
 
   return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
@@ -45,11 +84,20 @@ module.exports = async function feedbackHandler(req, res) {
     return sendJson(res, 415, { ok: false, error: 'Unsupported media type' });
   }
 
+  const declaredLength = Number(req.headers['content-length']);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+    return sendJson(res, 413, { ok: false, error: 'Payload too large' });
+  }
+
+  if (isRateLimited(getClientIp(req))) {
+    return sendJson(res, 429, { ok: false, error: 'Too many requests' });
+  }
+
   let body;
   try {
     body = await readJsonBody(req);
-  } catch (error) {
-    console.warn('Feedback request contained invalid JSON');
+  } catch {
+    console.warn('Feedback request contained invalid or oversized JSON');
     return sendJson(res, 400, { ok: false, error: 'Invalid request' });
   }
 

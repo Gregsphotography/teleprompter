@@ -4,7 +4,10 @@
   "description": "Premium Voice-Activated Teleprompter with Web Speech API scrolling",
   "main": "public/app.js",
   "scripts": {
-    "dev": "browser-sync start --server public --files \"public/index.html, public/styles.css, public/app.js\" --port 3000"
+    "dev": "browser-sync start --server public --files \"public/index.html, public/styles.css, public/app.js\" --port 3000",
+    "lint": "eslint .",
+    "test": "playwright test",
+    "serve": "http-server public -p 3111 -c-1"
   },
   "keywords": [
     "teleprompter",
@@ -16,6 +19,10 @@
   "author": "Antigravity",
   "license": "MIT",
   "devDependencies": {
-    "browser-sync": "^3.0.3"
+    "@playwright/test": "^1.61.1",
+    "browser-sync": "^3.0.3",
+    "eslint": "^10.7.0",
+    "globals": "^17.7.0",
+    "http-server": "^14.1.1"
   }
 }
