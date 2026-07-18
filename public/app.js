@@ -24,8 +24,20 @@ const state = {
   scriptWords: [],       // Flat array of lowercased words for matching
   wordElements: [],      // DOM references for highlighting
   wordOffsets: [],       // Cached word coordinates for scroll tracking
+  paragraphElements: [], // Cached paragraph nodes (rebuilt on tokenize)
   currentWordIndex: 0,
   activeParagraphForTopAlign: null,
+
+  // Highlight bookkeeping so per-frame updates touch only changed nodes
+  highlightedWordIndex: -1,
+  activeParagraphEl: null,
+
+  // Cached auto-scroll rate (recomputed on launch/resize/WPM change)
+  autoScrollPixelsPerSecond: 0,
+
+  // Debounced persistence
+  persistTimeout: null,
+  sidebarRefreshPending: false,
   
   // Interface state
   hudFadeTimeout: null,
@@ -183,6 +195,12 @@ document.addEventListener('DOMContentLoaded', () => {
   setupPanelResize();
   initSpeechRecognition();
   registerServiceWorker();
+
+  // Ensure debounced edits reach localStorage when the tab is hidden or closed
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPersist();
+  });
+  window.addEventListener('pagehide', flushPersist);
 
   // Trigger initial UI sizing update
   updateStats();
@@ -369,6 +387,7 @@ function loadActiveScriptIntoEditor() {
 }
 
 function selectScript(id) {
+  flushPersist();
   state.activeScriptId = id;
   renderScriptsSidebar();
   loadActiveScriptIntoEditor();
@@ -515,12 +534,26 @@ function deleteScript(id) {
 function updateActiveScriptState(field, value) {
   const script = getActiveScript();
   if (!script) return;
-  
+
   script[field] = value;
   script.updatedAt = Date.now();
-  
-  // Debounced update to sidebar to avoid performance hits
-  if (field === 'title' || field === 'body' || field === 'wpm') {
+
+  schedulePersist(field === 'title' || field === 'body' || field === 'wpm');
+}
+
+// Batch localStorage writes and sidebar rebuilds instead of doing both on
+// every keystroke. Flushed on a short timer and on lifecycle boundaries.
+function schedulePersist(refreshSidebar) {
+  if (refreshSidebar) state.sidebarRefreshPending = true;
+  clearTimeout(state.persistTimeout);
+  state.persistTimeout = setTimeout(flushPersist, 300);
+}
+
+function flushPersist() {
+  clearTimeout(state.persistTimeout);
+  state.persistTimeout = null;
+  if (state.sidebarRefreshPending) {
+    state.sidebarRefreshPending = false;
     renderScriptsSidebar();
   }
   saveToLocalStorage();
@@ -851,7 +884,8 @@ function adjustWpm(delta) {
   
   updateActiveScriptState('wpm', newWpm);
   updateStats();
-  
+  computeAutoScrollRate();
+
   showToast(`Speed: ${newWpm} WPM`);
 }
 
@@ -895,12 +929,13 @@ function setupGlobalShortcuts() {
    ========================================================================== */
 
 function launchTeleprompter() {
+  flushPersist();
   const script = getActiveScript();
   if (!script || !script.body.trim()) {
     showToast('Please type some script text first!', 'error');
     return;
   }
-  
+
   // 1. Setup UI configurations from active script settings
   applyPromptSizingConfigs(script);
   
@@ -980,10 +1015,7 @@ function restartTeleprompter() {
   DOM.prompterViewport.scrollTop = 0;
 
   // Clear word highlights
-  state.wordElements.forEach(el => {
-    el.classList.remove('current-word', 'spoken');
-    el.closest('.prompter-paragraph').classList.remove('active-paragraph');
-  });
+  clearWordHighlights();
 
   if (!wasPlaying) {
     showToast('Restarted. Press Space or Play to begin.');
@@ -1102,7 +1134,11 @@ function tokenizeScriptText(text) {
   state.scriptWords = [];
   state.wordElements = [];
   state.wordOffsets = [];
-  
+  state.paragraphElements = [];
+  state.highlightedWordIndex = -1;
+  state.activeParagraphEl = null;
+  state.autoScrollPixelsPerSecond = 0;
+
   const paragraphs = text.split(/\n+/).filter(p => p.trim());
   let wordIndex = 0;
   
@@ -1136,6 +1172,7 @@ function tokenizeScriptText(text) {
     });
     
     DOM.prompterTextBody.appendChild(paraEl);
+    state.paragraphElements.push(paraEl);
   });
 }
 
@@ -1157,6 +1194,8 @@ function calculateWordOffsets() {
       paragraph: el.closest('.prompter-paragraph')
     };
   });
+
+  computeAutoScrollRate();
 }
 
 function isMobilePrompterViewport() {
@@ -1171,7 +1210,7 @@ function getParagraphTopScrollTarget(paragraphEl) {
 }
 
 function getFirstPrompterParagraph() {
-  return DOM.prompterTextBody.querySelector('.prompter-paragraph');
+  return state.paragraphElements[0] || null;
 }
 
 function getPrompterViewportTopPadding() {
@@ -1180,7 +1219,7 @@ function getPrompterViewportTopPadding() {
 }
 
 function getPrompterParagraphs() {
-  return Array.from(DOM.prompterTextBody.querySelectorAll('.prompter-paragraph'));
+  return state.paragraphElements;
 }
 
 function resetParagraphTopAlignment() {
@@ -1243,6 +1282,23 @@ function startAutoScrollLoop() {
   requestAnimationFrame(timestamp => renderAutoScrollTicker(timestamp, loopId));
 }
 
+// Derive px/sec from actual reading geometry:
+// estimate words per line from column width, then scale to line height in pixels.
+// 0.52em avg char width × 5.5 avg chars/word gives avg word width in px.
+// Recomputed only when layout can change (launch, resize, WPM adjustments)
+// so the RAF loop never touches getComputedStyle.
+function computeAutoScrollRate() {
+  const script = getActiveScript();
+  const wpm = script ? script.wpm : 130;
+  const renderedStyles = window.getComputedStyle(DOM.prompterTextBody);
+  const fontSize = parseFloat(renderedStyles.fontSize) || (script ? script.fontSize : 42);
+  const lineHeight = script ? script.lineHeight : 1.6;
+  const marginWidth = DOM.prompterTextBody.clientWidth || (script ? (script.marginWidth || 700) : 700);
+
+  const wordsPerLine = marginWidth / (fontSize * 0.52 * 5.5);
+  state.autoScrollPixelsPerSecond = (wpm / 60 / wordsPerLine) * (fontSize * lineHeight);
+}
+
 function renderAutoScrollTicker(timestamp, loopId) {
   if (loopId !== state.scrollLoopId || !state.isPlaying || state.scrollMode !== 'auto') return;
 
@@ -1251,20 +1307,9 @@ function renderAutoScrollTicker(timestamp, loopId) {
   const elapsed = Math.min((timestamp - state.lastTime) / 1000, 0.1);
   state.lastTime = timestamp;
 
-  const script = getActiveScript();
-  const wpm = script ? script.wpm : 130;
-  const renderedStyles = window.getComputedStyle(DOM.prompterTextBody);
-  const fontSize = parseFloat(renderedStyles.fontSize) || (script ? script.fontSize : 42);
-  const lineHeight = script ? script.lineHeight : 1.6;
-  const marginWidth = DOM.prompterTextBody.clientWidth || (script ? (script.marginWidth || 700) : 700);
+  if (!state.autoScrollPixelsPerSecond) computeAutoScrollRate();
 
-  // Derive px/sec from actual reading geometry:
-  // estimate words per line from column width, then scale to line height in pixels.
-  // 0.52em avg char width × 5.5 avg chars/word gives avg word width in px.
-  const wordsPerLine = marginWidth / (fontSize * 0.52 * 5.5);
-  const pixelsPerSecond = (wpm / 60 / wordsPerLine) * (fontSize * lineHeight);
-
-  state.targetScrollY += pixelsPerSecond * elapsed;
+  state.targetScrollY += state.autoScrollPixelsPerSecond * elapsed;
 
   // LERP transition for ultra smooth, non-choppy tracking
   state.currentScrollY += (state.targetScrollY - state.currentScrollY) * 0.12;
@@ -1277,37 +1322,61 @@ function renderAutoScrollTicker(timestamp, loopId) {
   requestAnimationFrame(nextTimestamp => renderAutoScrollTicker(nextTimestamp, loopId));
 }
 
+function findWordIndexClosestTo(y) {
+  // wordOffsets are in document order, so tops are non-decreasing: binary search
+  const offsets = state.wordOffsets;
+  let lo = 0;
+  let hi = offsets.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (offsets[mid].top < y) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  if (lo > 0 && Math.abs(offsets[lo - 1].top - y) <= Math.abs(offsets[lo].top - y)) {
+    return lo - 1;
+  }
+  return lo;
+}
+
+function setActiveWordHighlight(index) {
+  // Move current-word / active-paragraph markers, touching only changed nodes
+  if (index === state.highlightedWordIndex) return;
+
+  const prevEl = state.wordElements[state.highlightedWordIndex];
+  if (prevEl) prevEl.classList.remove('current-word');
+
+  const el = state.wordElements[index];
+  if (!el) return;
+  el.classList.remove('spoken');
+  el.classList.add('current-word');
+
+  const para = state.wordOffsets[index]?.paragraph || el.closest('.prompter-paragraph');
+  if (para !== state.activeParagraphEl) {
+    state.activeParagraphEl?.classList.remove('active-paragraph');
+    para.classList.add('active-paragraph');
+    state.activeParagraphEl = para;
+  }
+
+  state.highlightedWordIndex = index;
+}
+
+function clearWordHighlights() {
+  state.wordElements.forEach(el => el.classList.remove('current-word', 'spoken'));
+  state.paragraphElements.forEach(p => p.classList.remove('active-paragraph'));
+  state.highlightedWordIndex = -1;
+  state.activeParagraphEl = null;
+}
+
 function highlightActiveWordByScrollPosition() {
   if (!state.wordOffsets || state.wordOffsets.length === 0) return;
-  
-  // Highlight the paragraph that lies in the center vertical line
+
+  // Highlight the word that lies on the center vertical line
   const viewportCenter = DOM.prompterViewport.scrollTop + (DOM.prompterViewport.clientHeight / 2);
-  
-  let closestIndex = 0;
-  let minDiff = Infinity;
-  
-  state.wordOffsets.forEach((offset, idx) => {
-    const diff = Math.abs(offset.top - viewportCenter);
-    if (diff < minDiff) {
-      minDiff = diff;
-      closestIndex = idx;
-    }
-  });
-  
-  // Reset previous paragraph active highlights
-  state.wordElements.forEach(el => {
-    el.closest('.prompter-paragraph').classList.remove('active-paragraph');
-    el.classList.remove('current-word');
-  });
-  
-  // Activate target
-  const activeWordEl = state.wordElements[closestIndex];
-  if (activeWordEl) {
-    const activePara = activeWordEl.closest('.prompter-paragraph');
-    activePara.classList.add('active-paragraph');
-    activeWordEl.classList.add('current-word');
-    maybeAdvanceAutoParagraphTopAlign();
-  }
+  setActiveWordHighlight(findWordIndexClosestTo(viewportCenter));
+  maybeAdvanceAutoParagraphTopAlign();
 }
 
 /* ==========================================================================
@@ -1488,33 +1557,31 @@ function processSpokenPhrase(spokenText, isInterim = false) {
 }
 
 function scrollToWordIndex(index) {
-  state.currentWordIndex = index;
-  
-  // Highlight elements
-  state.wordElements.forEach((el, idx) => {
-    const para = el.closest('.prompter-paragraph');
-    
-    if (idx < index) {
-      el.classList.add('spoken');
-      el.classList.remove('current-word');
-      para.classList.remove('active-paragraph');
-    } else if (idx === index) {
-      el.classList.remove('spoken');
-      el.classList.add('current-word');
-      para.classList.add('active-paragraph');
-      
-      // Compute target Y coordinate to position active word vertically centered in the focus overlay zone
-      const wordOffset = state.wordOffsets[idx];
-      if (wordOffset) {
-        const viewportHeight = DOM.prompterViewport.clientHeight;
-        // Center of viewport scroll position target
-        state.targetScrollY = wordOffset.top - (viewportHeight / 2) + (wordOffset.height / 2);
-      }
-    } else {
-      el.classList.remove('spoken', 'current-word');
-      para.classList.remove('active-paragraph');
+  const from = Math.max(state.currentWordIndex, 0);
+
+  if (index < from) {
+    // Rewind (restart handles the common case): rebuild spoken markers
+    clearWordHighlights();
+    for (let i = 0; i < index; i++) {
+      state.wordElements[i].classList.add('spoken');
     }
-  });
+  } else {
+    // Normal forward advance: only the newly passed words change
+    for (let i = from; i < index; i++) {
+      state.wordElements[i].classList.add('spoken');
+    }
+  }
+
+  state.currentWordIndex = index;
+  setActiveWordHighlight(index);
+
+  // Compute target Y coordinate to position active word vertically centered in the focus overlay zone
+  const wordOffset = state.wordOffsets[index];
+  if (wordOffset) {
+    const viewportHeight = DOM.prompterViewport.clientHeight;
+    // Center of viewport scroll position target
+    state.targetScrollY = wordOffset.top - (viewportHeight / 2) + (wordOffset.height / 2);
+  }
 }
 
 function startVoiceScrollLoop() {
