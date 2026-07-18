@@ -16,7 +16,8 @@ const state = {
   currentScrollY: 0,
   targetScrollY: 0,
   lastTime: 0,
-  
+  scrollLoopId: 0,       // Generation counter so stale RAF loops self-terminate
+
   // Voice engine tracking
   recognition: null,
   recognitionActive: false,
@@ -25,7 +26,6 @@ const state = {
   wordOffsets: [],       // Cached word coordinates for scroll tracking
   currentWordIndex: 0,
   activeParagraphForTopAlign: null,
-  speechTimeout: null,
   
   // Interface state
   hudFadeTimeout: null,
@@ -345,7 +345,7 @@ function loadActiveScriptIntoEditor() {
   DOM.configWpm.value = script.wpm;
   DOM.displayWpm.textContent = `${script.wpm} WPM`;
   
-  DOM.configFontFamily.value = script.fontSize ? (script.fontFamily || 'sans') : 'sans';
+  DOM.configFontFamily.value = script.fontFamily || 'sans';
   DOM.configFontSize.value = script.fontSize || 42;
   DOM.displayFontSize.textContent = `${DOM.configFontSize.value}px`;
   
@@ -941,9 +941,7 @@ function launchTeleprompter() {
   if (state.scrollMode === 'voice') {
     startVoiceEngine();
   } else {
-    // Start RAF frame ticker for Auto-Scroll
-    state.lastTime = performance.now();
-    requestAnimationFrame(renderAutoScrollTicker);
+    startAutoScrollLoop();
     showToast('Auto-Scroll Active (Space to Pause)');
   }
 }
@@ -951,8 +949,12 @@ function launchTeleprompter() {
 function exitTeleprompter() {
   // Stop engines
   state.isPlaying = false;
+  state.scrollLoopId++;
   stopVoiceEngine();
   releaseWakeLock();
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  }
   
   // Switch Views
   DOM.prompterView.classList.remove('active');
@@ -967,6 +969,7 @@ function restartTeleprompter() {
 
   // Stop current engines cleanly
   state.isPlaying = false;
+  state.scrollLoopId++;
   stopVoiceEngine();
 
   // Reset to the top
@@ -995,8 +998,7 @@ function restartTeleprompter() {
   if (state.scrollMode === 'voice') {
     startVoiceEngine();
   } else {
-    state.lastTime = performance.now();
-    requestAnimationFrame(renderAutoScrollTicker);
+    startAutoScrollLoop();
     showToast('Restarted from beginning.');
   }
 }
@@ -1008,15 +1010,15 @@ function togglePlayback() {
   
   if (state.isPlaying) {
     showToast(state.scrollMode === 'voice' ? 'Listening...' : 'Scrolling Resumed');
-    
+
     if (state.scrollMode === 'voice') {
       startVoiceEngine();
     } else {
-      state.lastTime = performance.now();
-      requestAnimationFrame(renderAutoScrollTicker);
+      startAutoScrollLoop();
     }
   } else {
     showToast('Paused');
+    state.scrollLoopId++;
     stopVoiceEngine();
   }
 }
@@ -1138,9 +1140,9 @@ function tokenizeScriptText(text) {
 }
 
 function cleanWordText(word) {
-  // Lowercase and strip typical non-phonetic punctuation marks
+  // Lowercase and strip punctuation, symbols/emoji and variation selectors (unicode-aware)
   return word.toLowerCase()
-             .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"'🎙️🚀🎙️]/g, "")
+             .replace(/[\p{P}\p{S}\uFE0E\uFE0F]/gu, '')
              .trim();
 }
 
@@ -1235,41 +1237,44 @@ function setupResponsiveLayoutListeners() {
    Smooth Auto-Scroll Physics Ticker (RAF Loop)
    ========================================================================== */
 
-function renderAutoScrollTicker(timestamp) {
-  if (!state.isPlaying || state.scrollMode !== 'auto') return;
-  
-  const elapsed = (timestamp - state.lastTime) / 1000;
-  state.lastTime = timestamp;
-  
-  // Don't step frame if excessive (e.g. background tab tab sleep wake)
-  if (elapsed < 0.1) {
-    const script = getActiveScript();
-    const wpm = script ? script.wpm : 130;
-    const renderedStyles = window.getComputedStyle(DOM.prompterTextBody);
-    const fontSize = parseFloat(renderedStyles.fontSize) || (script ? script.fontSize : 42);
-    const lineHeight = script ? script.lineHeight : 1.6;
-    const marginWidth = DOM.prompterTextBody.clientWidth || (script ? (script.marginWidth || 700) : 700);
+function startAutoScrollLoop() {
+  const loopId = ++state.scrollLoopId;
+  state.lastTime = performance.now();
+  requestAnimationFrame(timestamp => renderAutoScrollTicker(timestamp, loopId));
+}
 
-    // Derive px/sec from actual reading geometry:
-    // estimate words per line from column width, then scale to line height in pixels.
-    // 0.52em avg char width × 5.5 avg chars/word gives avg word width in px.
-    const wordsPerLine = marginWidth / (fontSize * 0.52 * 5.5);
-    const pixelsPerSecond = (wpm / 60 / wordsPerLine) * (fontSize * lineHeight);
-    
-    state.targetScrollY += pixelsPerSecond * elapsed;
-    
-    // LERP transition for ultra smooth, non-choppy tracking
-    state.currentScrollY += (state.targetScrollY - state.currentScrollY) * 0.12;
-    
-    DOM.prompterViewport.scrollTop = Math.round(state.currentScrollY);
-    
-    // Identify and highlight active reading paragraphs based on scroll viewport position
-    highlightActiveWordByScrollPosition();
-  } else {
-    state.lastTime = timestamp;
-  }
-  
-  requestAnimationFrame(renderAutoScrollTicker);
+function renderAutoScrollTicker(timestamp, loopId) {
+  if (loopId !== state.scrollLoopId || !state.isPlaying || state.scrollMode !== 'auto') return;
+
+  // Clamp so a background-tab wake advances at most one normal step,
+  // while slow frames (< 10 fps) still keep scrolling.
+  const elapsed = Math.min((timestamp - state.lastTime) / 1000, 0.1);
+  state.lastTime = timestamp;
+
+  const script = getActiveScript();
+  const wpm = script ? script.wpm : 130;
+  const renderedStyles = window.getComputedStyle(DOM.prompterTextBody);
+  const fontSize = parseFloat(renderedStyles.fontSize) || (script ? script.fontSize : 42);
+  const lineHeight = script ? script.lineHeight : 1.6;
+  const marginWidth = DOM.prompterTextBody.clientWidth || (script ? (script.marginWidth || 700) : 700);
+
+  // Derive px/sec from actual reading geometry:
+  // estimate words per line from column width, then scale to line height in pixels.
+  // 0.52em avg char width × 5.5 avg chars/word gives avg word width in px.
+  const wordsPerLine = marginWidth / (fontSize * 0.52 * 5.5);
+  const pixelsPerSecond = (wpm / 60 / wordsPerLine) * (fontSize * lineHeight);
+
+  state.targetScrollY += pixelsPerSecond * elapsed;
+
+  // LERP transition for ultra smooth, non-choppy tracking
+  state.currentScrollY += (state.targetScrollY - state.currentScrollY) * 0.12;
+
+  DOM.prompterViewport.scrollTop = Math.round(state.currentScrollY);
+
+  // Identify and highlight active reading paragraphs based on scroll viewport position
+  highlightActiveWordByScrollPosition();
+
+  requestAnimationFrame(nextTimestamp => renderAutoScrollTicker(nextTimestamp, loopId));
 }
 
 function highlightActiveWordByScrollPosition() {
@@ -1393,35 +1398,46 @@ function startVoiceEngine() {
     fallbackToAutoScroll('Speech recognition not supported. Auto-scroll started.');
     return;
   }
-  
+
   DOM.hudVoiceIndicator.style.display = 'flex';
   DOM.hudVoiceText.textContent = 'Activating...';
-  
+
+  // Run background interpolation loop for scrolling to target index Y smoothly
+  startVoiceScrollLoop();
+
+  // A recent stop() may still be winding down; recognition can't be started
+  // again until its onend fires, and onend auto-restarts while playing.
+  if (state.recognitionActive) {
+    DOM.hudVoiceIndicator.classList.add('listening');
+    DOM.hudVoiceText.textContent = 'Listening...';
+    return;
+  }
+
   try {
     state.recognition.start();
-    // Run background interpolation loop for scrolling to target index Y smoothly
-    requestAnimationFrame(renderVoiceScrollTicker);
   } catch (err) {
+    if (err && err.name === 'InvalidStateError') {
+      // Already started (stop/start race) — onend will resync state.
+      return;
+    }
     console.error('Voice engine start error', err);
     fallbackToAutoScroll('Could not start microphone. Auto-scroll started.');
   }
 }
 
 function fallbackToAutoScroll(message) {
+  // Session-only fallback: switch the running engine without rewriting the
+  // script's saved voiceScroll preference or the dashboard toggles.
   if (state.recognition && state.recognitionActive) {
     stopVoiceEngine();
   }
 
   state.scrollMode = 'auto';
   state.isPlaying = true;
-  DOM.configAutoScroll.checked = true;
-  DOM.configVoiceScroll.checked = false;
   DOM.hudSpeedWrapper.style.display = 'flex';
   DOM.hudVoiceText.textContent = 'Voice unavailable';
-  updateActiveScriptState('voiceScroll', false);
   updateHUDButtonState();
-  state.lastTime = performance.now();
-  requestAnimationFrame(renderAutoScrollTicker);
+  startAutoScrollLoop();
   showToast(message, 'error');
 }
 
@@ -1501,19 +1517,24 @@ function scrollToWordIndex(index) {
   });
 }
 
-function renderVoiceScrollTicker() {
-  if (!state.isPlaying || state.scrollMode !== 'voice') return;
-  
+function startVoiceScrollLoop() {
+  const loopId = ++state.scrollLoopId;
+  requestAnimationFrame(() => renderVoiceScrollTicker(loopId));
+}
+
+function renderVoiceScrollTicker(loopId) {
+  if (loopId !== state.scrollLoopId || !state.isPlaying || state.scrollMode !== 'voice') return;
+
   // Gently slide the viewport scroll position towards the target vertical Y coordinate
   const diff = state.targetScrollY - state.currentScrollY;
-  
+
   if (Math.abs(diff) > 0.5) {
     // Elegant proportional LERP interpolation
     state.currentScrollY += diff * 0.08;
     DOM.prompterViewport.scrollTop = Math.round(state.currentScrollY);
   }
-  
-  requestAnimationFrame(renderVoiceScrollTicker);
+
+  requestAnimationFrame(() => renderVoiceScrollTicker(loopId));
 }
 
 /* ==========================================================================
