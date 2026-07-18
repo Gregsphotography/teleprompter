@@ -1271,6 +1271,10 @@ input:checked + .slider:before {
 }
 
 /* Pre-start countdown overlay */
+.countdown-overlay[hidden] {
+  display: none;
+}
+
 .countdown-overlay {
   position: absolute;
   inset: 0;
