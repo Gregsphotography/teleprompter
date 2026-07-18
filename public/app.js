@@ -39,11 +39,20 @@ const state = {
   persistTimeout: null,
   sidebarRefreshPending: false,
   
+  // Pre-start countdown
+  countdownToken: 0,
+  countdownTimeout: null,
+
+  // HUD time-remaining throttle
+  lastRemainingUpdate: 0,
+
   // Interface state
   hudFadeTimeout: null,
   toastTimeout: null,
   wakeLock: null
 };
+
+const DEFAULT_VOICE_LANG = 'en-US';
 
 // --- Default Welcome Scripts for Onboarding ---
 const DEFAULT_SCRIPTS = [
@@ -120,6 +129,9 @@ const DOM = {
   configFocusOverlay: document.getElementById('config-focus-overlay'),
   configColorblindMode: document.getElementById('config-colorblind-mode'),
   configAutoStart: document.getElementById('config-auto-start'),
+  configVoiceLang: document.getElementById('config-voice-lang'),
+  configFocusPosition: document.getElementById('config-focus-position'),
+  displayFocusPosition: document.getElementById('display-focus-position'),
   containerVoiceScroll: document.getElementById('container-voice-control'),
   
   // Displays
@@ -161,6 +173,11 @@ const DOM = {
   hudBtnMirror: document.getElementById('hud-btn-mirror'),
   hudBtnGuides: document.getElementById('hud-btn-guides'),
   hudBtnRestart: document.getElementById('hud-btn-restart'),
+  hudTimeRemaining: document.getElementById('hud-time-remaining'),
+
+  // Countdown overlay
+  countdownOverlay: document.getElementById('countdown-overlay'),
+  countdownNumber: document.getElementById('countdown-number'),
   
   // Toast
   appToast: document.getElementById('app-toast'),
@@ -249,6 +266,15 @@ function loadGlobalPreferences() {
   const colorblind = localStorage.getItem('aeroprompter_colorblind') === 'true';
   DOM.configColorblindMode.checked = colorblind;
   document.body.classList.toggle('colorblind-mode', colorblind);
+
+  const savedLang = localStorage.getItem('aeroprompter_voice_lang');
+  if (savedLang && [...DOM.configVoiceLang.options].some(opt => opt.value === savedLang)) {
+    DOM.configVoiceLang.value = savedLang;
+  }
+}
+
+function getVoiceLang() {
+  return DOM.configVoiceLang.value || DEFAULT_VOICE_LANG;
 }
 
 function saveToLocalStorage() {
@@ -281,6 +307,7 @@ function normalizeScript(rawScript, fallbackIndex = 0) {
     mirrorMode: !!rawScript.mirrorMode,
     voiceScroll: rawScript.voiceScroll !== false,
     focusOverlay: rawScript.focusOverlay !== false,
+    focusPosition: clampNumber(rawScript.focusPosition, 30, 70, 50),
     fontFamily: ['sans', 'serif', 'mono'].includes(rawScript.fontFamily) ? rawScript.fontFamily : 'sans',
     updatedAt: Number.isFinite(rawScript.updatedAt) ? rawScript.updatedAt : now
   };
@@ -375,6 +402,9 @@ function loadActiveScriptIntoEditor() {
   
   DOM.configMirrorMode.checked = !!script.mirrorMode;
   DOM.configFocusOverlay.checked = script.focusOverlay !== false;
+
+  DOM.configFocusPosition.value = script.focusPosition || 50;
+  DOM.displayFocusPosition.textContent = `${DOM.configFocusPosition.value}%`;
   
   // Set Scroll Modes
   const isVoice = isVoiceScrollEnabled(script);
@@ -716,6 +746,21 @@ function setupEditorListeners() {
     document.body.classList.toggle('colorblind-mode', enabled);
     localStorage.setItem('aeroprompter_colorblind', enabled);
   });
+
+  DOM.configVoiceLang.addEventListener('change', () => {
+    const lang = getVoiceLang();
+    localStorage.setItem('aeroprompter_voice_lang', lang);
+    if (state.recognition) {
+      state.recognition.lang = lang; // takes effect on next recognition start
+    }
+  });
+
+  DOM.configFocusPosition.addEventListener('input', () => {
+    const val = parseInt(DOM.configFocusPosition.value) || 50;
+    DOM.displayFocusPosition.textContent = `${val}%`;
+    updateActiveScriptState('focusPosition', val);
+    applyFocusPosition(val);
+  });
   
   // Handle Mutually Exclusive Scroll Modes
   DOM.configVoiceScroll.addEventListener('change', () => {
@@ -963,28 +1008,68 @@ function launchTeleprompter() {
   
   // 4. Start appropriate engine
   state.scrollMode = isVoiceScrollEnabled(script) ? 'voice' : 'auto';
-  state.isPlaying = DOM.configAutoStart.checked;
+  state.isPlaying = false;
+  resetTimeRemainingDisplay();
 
   updateHUDButtonState();
   triggerHUDVisibility();
 
-  if (!state.isPlaying) {
+  if (!DOM.configAutoStart.checked) {
     showToast('Ready. Press Space or Play to begin.');
     return;
   }
 
-  if (state.scrollMode === 'voice') {
-    startVoiceEngine();
-  } else {
-    startAutoScrollLoop();
-    showToast('Auto-Scroll Active (Space to Pause)');
-  }
+  // Give the presenter a moment to get in position before scrolling starts
+  runStartCountdown(() => {
+    state.isPlaying = true;
+    updateHUDButtonState();
+    triggerHUDVisibility();
+
+    if (state.scrollMode === 'voice') {
+      startVoiceEngine();
+    } else {
+      startAutoScrollLoop();
+      showToast('Auto-Scroll Active (Space to Pause)');
+    }
+  });
+}
+
+function runStartCountdown(onDone) {
+  const token = ++state.countdownToken;
+  let step = 3;
+  DOM.countdownOverlay.hidden = false;
+
+  const tick = () => {
+    if (token !== state.countdownToken || !DOM.prompterView.classList.contains('active')) {
+      DOM.countdownOverlay.hidden = true;
+      return;
+    }
+    if (step === 0) {
+      DOM.countdownOverlay.hidden = true;
+      onDone();
+      return;
+    }
+    DOM.countdownNumber.textContent = step;
+    DOM.countdownNumber.classList.remove('pop');
+    void DOM.countdownNumber.offsetWidth; // restart the pop animation
+    DOM.countdownNumber.classList.add('pop');
+    step--;
+    state.countdownTimeout = setTimeout(tick, 800);
+  };
+  tick();
+}
+
+function cancelStartCountdown() {
+  state.countdownToken++;
+  clearTimeout(state.countdownTimeout);
+  DOM.countdownOverlay.hidden = true;
 }
 
 function exitTeleprompter() {
   // Stop engines
   state.isPlaying = false;
   state.scrollLoopId++;
+  cancelStartCountdown();
   stopVoiceEngine();
   releaseWakeLock();
   if (document.fullscreenElement) {
@@ -1005,6 +1090,7 @@ function restartTeleprompter() {
   // Stop current engines cleanly
   state.isPlaying = false;
   state.scrollLoopId++;
+  cancelStartCountdown();
   stopVoiceEngine();
 
   // Reset to the top
@@ -1036,6 +1122,7 @@ function restartTeleprompter() {
 }
 
 function togglePlayback() {
+  cancelStartCountdown();
   state.isPlaying = !state.isPlaying;
   updateHUDButtonState();
   triggerHUDVisibility();
@@ -1092,7 +1179,18 @@ function getPrompterLayoutMetrics(script) {
   };
 }
 
+function applyFocusPosition(percent) {
+  DOM.prompterView.style.setProperty('--focus-position', `${percent}%`);
+}
+
+function getFocusPositionRatio() {
+  const script = getActiveScript();
+  return (script?.focusPosition || 50) / 100;
+}
+
 function applyPromptSizingConfigs(script) {
+  applyFocusPosition(script.focusPosition || 50);
+
   // Clear layout properties
   DOM.prompterTextBody.className = 'prompter-text-body';
   DOM.prompterTextBody.classList.add(`prompter-font-${script.fontFamily || 'sans'}`);
@@ -1176,11 +1274,32 @@ function tokenizeScriptText(text) {
   });
 }
 
+const NUMBER_ONES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+  'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+const NUMBER_TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+
+// Spell out small numerals so a spoken "two" matches a scripted "2" (and
+// vice versa \u2014 recognition engines often transcribe numbers as digits).
+function numberToWords(n) {
+  if (n < 20) return NUMBER_ONES[n];
+  if (n < 100) {
+    const tens = NUMBER_TENS[Math.floor(n / 10)];
+    const ones = n % 10;
+    return ones ? tens + NUMBER_ONES[ones] : tens;
+  }
+  return String(n);
+}
+
 function cleanWordText(word) {
   // Lowercase and strip punctuation, symbols/emoji and variation selectors (unicode-aware)
-  return word.toLowerCase()
-             .replace(/[\p{P}\p{S}\uFE0E\uFE0F]/gu, '')
-             .trim();
+  const cleaned = word.toLowerCase()
+                      .replace(/[\p{P}\p{S}\uFE0E\uFE0F]/gu, '')
+                      .trim();
+
+  if (/^\d{1,2}$/.test(cleaned)) {
+    return numberToWords(parseInt(cleaned, 10));
+  }
+  return cleaned;
 }
 
 function calculateWordOffsets() {
@@ -1319,7 +1438,28 @@ function renderAutoScrollTicker(timestamp, loopId) {
   // Identify and highlight active reading paragraphs based on scroll viewport position
   highlightActiveWordByScrollPosition();
 
+  if (timestamp - state.lastRemainingUpdate > 500) {
+    state.lastRemainingUpdate = timestamp;
+    updateTimeRemainingDisplay();
+  }
+
   requestAnimationFrame(nextTimestamp => renderAutoScrollTicker(nextTimestamp, loopId));
+}
+
+function updateTimeRemainingDisplay() {
+  const viewport = DOM.prompterViewport;
+  const remainingPx = Math.max(0, viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop);
+  const pps = state.autoScrollPixelsPerSecond;
+  if (!pps) return;
+
+  const totalSeconds = Math.round(remainingPx / pps);
+  const min = Math.floor(totalSeconds / 60);
+  const sec = totalSeconds % 60;
+  DOM.hudTimeRemaining.textContent = `${min}:${String(sec).padStart(2, '0')}`;
+}
+
+function resetTimeRemainingDisplay() {
+  DOM.hudTimeRemaining.textContent = '–:––';
 }
 
 function findWordIndexClosestTo(y) {
@@ -1373,9 +1513,9 @@ function clearWordHighlights() {
 function highlightActiveWordByScrollPosition() {
   if (!state.wordOffsets || state.wordOffsets.length === 0) return;
 
-  // Highlight the word that lies on the center vertical line
-  const viewportCenter = DOM.prompterViewport.scrollTop + (DOM.prompterViewport.clientHeight / 2);
-  setActiveWordHighlight(findWordIndexClosestTo(viewportCenter));
+  // Highlight the word that lies on the focus line
+  const focusLine = DOM.prompterViewport.scrollTop + (DOM.prompterViewport.clientHeight * getFocusPositionRatio());
+  setActiveWordHighlight(findWordIndexClosestTo(focusLine));
   maybeAdvanceAutoParagraphTopAlign();
 }
 
@@ -1390,6 +1530,7 @@ function initSpeechRecognition() {
     console.warn("Speech Recognition API is not supported in this browser.");
     DOM.configVoiceScroll.disabled = true;
     DOM.configVoiceScroll.checked = false;
+    DOM.configVoiceLang.disabled = true;
     DOM.configAutoScroll.checked = true;
     if (DOM.containerVoiceScroll) {
       const voiceHelp = DOM.containerVoiceScroll.querySelector('.tooltip-help');
@@ -1404,7 +1545,7 @@ function initSpeechRecognition() {
   const rec = new SpeechRecognition();
   rec.continuous = true;
   rec.interimResults = true;
-  rec.lang = 'en-US';
+  rec.lang = getVoiceLang();
   
   rec.onstart = () => {
     state.recognitionActive = true;
@@ -1575,12 +1716,11 @@ function scrollToWordIndex(index) {
   state.currentWordIndex = index;
   setActiveWordHighlight(index);
 
-  // Compute target Y coordinate to position active word vertically centered in the focus overlay zone
+  // Compute target Y coordinate to position active word on the focus line
   const wordOffset = state.wordOffsets[index];
   if (wordOffset) {
     const viewportHeight = DOM.prompterViewport.clientHeight;
-    // Center of viewport scroll position target
-    state.targetScrollY = wordOffset.top - (viewportHeight / 2) + (wordOffset.height / 2);
+    state.targetScrollY = wordOffset.top - (viewportHeight * getFocusPositionRatio()) + (wordOffset.height / 2);
   }
 }
 

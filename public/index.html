@@ -137,6 +137,29 @@
                   </label>
                 </div>
                 
+                <div class="control-label" style="margin-top: 8px;">
+                  Voice Language
+                  <span class="tooltip-help" tabindex="0" role="button" aria-label="Language used by speech recognition for voice-activated scrolling." data-tooltip="Language used by speech recognition for voice-activated scrolling.">?</span>
+                </div>
+                <select id="config-voice-lang" aria-label="Voice recognition language">
+                  <option value="en-US" selected>English (US)</option>
+                  <option value="en-GB">English (UK)</option>
+                  <option value="en-AU">English (Australia)</option>
+                  <option value="en-IN">English (India)</option>
+                  <option value="de-DE">Deutsch</option>
+                  <option value="fr-FR">Français</option>
+                  <option value="es-ES">Español (España)</option>
+                  <option value="es-MX">Español (México)</option>
+                  <option value="it-IT">Italiano</option>
+                  <option value="pt-BR">Português (Brasil)</option>
+                  <option value="nl-NL">Nederlands</option>
+                  <option value="pl-PL">Polski</option>
+                  <option value="sv-SE">Svenska</option>
+                  <option value="ja-JP">日本語</option>
+                  <option value="ko-KR">한국어</option>
+                  <option value="zh-CN">中文 (简体)</option>
+                </select>
+
                 <div class="switch-container" id="container-auto-scroll" style="margin-top: 8px;">
                   <span class="control-label">Auto-Scroll</span>
                   <label class="switch">
@@ -245,6 +268,12 @@
                     <span class="slider"></span>
                   </label>
                 </div>
+
+                <div class="control-label" style="margin-top: 8px;">
+                  <span>Focus Zone Position <span class="tooltip-help" tabindex="0" role="button" aria-label="Vertical position of the reading guides and voice-scroll anchor line." data-tooltip="Vertical position of the reading guides and voice-scroll anchor line.">?</span></span>
+                  <span id="display-focus-position" class="control-value">50%</span>
+                </div>
+                <input type="range" id="config-focus-position" min="30" max="70" step="5" value="50" aria-label="Focus zone position">
               </div>
             </div>
             
@@ -266,6 +295,11 @@
         <div class="focus-zone-indicator-right"></div>
       </div>
       
+      <!-- Countdown overlay before auto-start -->
+      <div id="countdown-overlay" class="countdown-overlay" aria-live="assertive" hidden>
+        <span id="countdown-number" class="countdown-number"></span>
+      </div>
+
       <!-- Primary Scrolling Viewport -->
       <div id="prompter-viewport" class="prompter-scroll-viewport">
         <div id="prompter-text-body" class="prompter-text-body prompter-font-sans">
@@ -311,6 +345,7 @@
               </svg>
             </button>
             <div id="hud-speed-text" class="hud-speed-value">130 WPM</div>
+            <div id="hud-time-remaining" class="hud-time-remaining" title="Estimated time remaining">–:––</div>
             <button id="hud-btn-faster" class="hud-btn" title="Faster (Up Arrow)" aria-label="Faster">
               <svg viewBox="0 0 24 24">
                 <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
