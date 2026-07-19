@@ -2,7 +2,7 @@ const globals = require('globals');
 
 module.exports = [
   {
-    ignores: ['node_modules/**', 'test-results/**', 'playwright-report/**']
+    ignores: ['node_modules/**', 'test-results/**', 'playwright-report/**', 'ios/**']
   },
   {
     files: ['public/app.js', 'public/js/**/*.js'],

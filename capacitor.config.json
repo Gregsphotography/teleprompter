@@ -1,0 +1,16 @@
+{
+  "appId": "app.aeroprompter",
+  "appName": "AeroPrompter",
+  "webDir": "public",
+  "backgroundColor": "#0a0d14",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#0a0d14"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 0,
+      "backgroundColor": "#0a0d14"
+    }
+  }
+}

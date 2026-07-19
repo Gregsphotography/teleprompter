@@ -16,9 +16,11 @@ import {
   setupResponsiveLayoutListeners
 } from './js/prompter.js';
 import { initSpeechRecognition } from './js/voice.js';
+import { isNativeApp } from './js/platform.js';
 
 function registerServiceWorker() {
-  if (!('serviceWorker' in navigator)) return;
+  // The native app ships its assets in the bundle — no service worker needed
+  if (isNativeApp() || !('serviceWorker' in navigator)) return;
 
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch(error => {

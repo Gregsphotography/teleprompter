@@ -392,6 +392,10 @@ body.legal-page {
   width: 100vw;
   position: relative;
   overflow: hidden;
+  /* Keep content clear of the notch / rounded corners (viewport-fit=cover) */
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 
 /* --- View Toggle Logic --- */
@@ -579,7 +583,7 @@ a:focus-visible,
 }
 
 .sidebar-footer {
-  padding: 14px 20px 18px;
+  padding: 14px 20px calc(18px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--border-color);
   display: flex;
   align-items: center;
@@ -775,7 +779,7 @@ a:focus-visible,
 .stats-bar {
   display: flex;
   gap: 24px;
-  padding: 4px 8px;
+  padding: 4px 8px calc(4px + env(safe-area-inset-bottom));
   font-size: 0.85rem;
   color: var(--text-secondary);
 }
@@ -1177,7 +1181,7 @@ input:checked + .slider:before {
 /* --- Immersive Floating HUD Control Dashboard --- */
 .hud-wrapper {
   position: absolute;
-  bottom: 32px;
+  bottom: max(32px, env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%) translateY(0);
   z-index: 200;

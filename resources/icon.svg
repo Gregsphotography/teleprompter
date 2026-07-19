@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="AeroPrompter">
+  <defs>
+    <linearGradient id="aero-gradient" x1="96" y1="80" x2="416" y2="432" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.388 0 0 0 0 0.4 0 0 0 0 0.945 0 0 0 0.55 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" fill="#0a0d14"/>
+  <path d="M126 146c0-19.9 16.1-36 36-36h188c19.9 0 36 16.1 36 36v220c0 19.9-16.1 36-36 36H162c-19.9 0-36-16.1-36-36V146Z" fill="#10141f" stroke="url(#aero-gradient)" stroke-width="18" filter="url(#glow)"/>
+  <path d="M178 186h156M178 244h156M178 302h96" stroke="#f8fafc" stroke-width="24" stroke-linecap="round"/>
+  <path d="M366 216v80M342 238v36M390 238v36" stroke="#10b981" stroke-width="18" stroke-linecap="round"/>
+</svg>

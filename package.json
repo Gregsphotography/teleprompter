@@ -7,7 +7,8 @@
     "dev": "browser-sync start --server public --files \"public/index.html, public/styles.css, public/app.js\" --port 3000",
     "lint": "eslint .",
     "test": "playwright test",
-    "serve": "http-server public -p 3111 -c-1"
+    "serve": "http-server public -p 3111 -c-1",
+    "cap:sync": "cap sync ios"
   },
   "keywords": [
     "teleprompter",
@@ -19,10 +20,17 @@
   "author": "Antigravity",
   "license": "MIT",
   "devDependencies": {
+    "@capacitor/cli": "^8.4.2",
     "@playwright/test": "^1.61.1",
     "browser-sync": "^3.0.3",
     "eslint": "^10.7.0",
     "globals": "^17.7.0",
     "http-server": "^14.1.1"
+  },
+  "dependencies": {
+    "@capacitor-community/keep-awake": "^8.0.1",
+    "@capacitor-community/speech-recognition": "^7.0.1",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/ios": "^8.4.2"
   }
 }

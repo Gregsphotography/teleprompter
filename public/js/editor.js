@@ -18,6 +18,7 @@ import {
   flushPersist,
   getVoiceLang
 } from './storage.js';
+import { API_BASE } from './platform.js';
 import {
   launchTeleprompter,
   getPrompterLayoutMetrics,
@@ -477,7 +478,7 @@ async function submitFeedbackForm(event) {
   setFeedbackSubmitting(true);
 
   try {
-    const response = await fetch('/api/feedback', {
+    const response = await fetch(`${API_BASE}/api/feedback`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'

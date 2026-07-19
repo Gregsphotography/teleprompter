@@ -22,6 +22,7 @@ import {
   startVoiceEngine,
   stopVoiceEngine
 } from './voice.js';
+import { isNativeApp, getNativePlugin } from './platform.js';
 
 export function setupPrompterHUDListeners() {
   DOM.hudBtnBack.addEventListener('click', exitTeleprompter);
@@ -657,6 +658,15 @@ async function enterFullscreen() {
 }
 
 async function requestWakeLock() {
+  if (isNativeApp()) {
+    try {
+      await getNativePlugin('KeepAwake')?.keepAwake();
+    } catch (error) {
+      console.info('Keep awake unavailable', error);
+    }
+    return;
+  }
+
   if (!('wakeLock' in navigator) || state.wakeLock) return;
 
   try {
@@ -670,6 +680,15 @@ async function requestWakeLock() {
 }
 
 async function releaseWakeLock() {
+  if (isNativeApp()) {
+    try {
+      await getNativePlugin('KeepAwake')?.allowSleep();
+    } catch (error) {
+      console.info('Keep awake release skipped', error);
+    }
+    return;
+  }
+
   if (!state.wakeLock) return;
 
   try {
