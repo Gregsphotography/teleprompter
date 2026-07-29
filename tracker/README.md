@@ -1,8 +1,8 @@
 # AeroPrompter visitor counter
 
-A ~200-line Node service that counts visitors to aeroprompter.app. It runs on
-our own EU server, writes to a SQLite file that is not reachable from the web,
-and involves no third party at any point.
+A small Node service that counts visitors to aeroprompter.app. It runs on our
+own EU server, appends to a CSV file that is not reachable from the web, and
+involves no third party at any point.
 
 It exists to answer one question — *how many people use this?* — without
 sending anything to Google, Vercel Analytics, or any hosted platform.
@@ -13,19 +13,26 @@ subdomain, no DNS change, no CORS, no CSP change.
 
 ## What it stores
 
-Each hit becomes one row:
+One append-only CSV file at `/var/lib/aeroprompter/hits.csv`:
 
-| Column | Example | Notes |
-| --- | --- | --- |
-| `day` | `2026-07-29` | UTC |
-| `visitor` | `4cd52592…` | `sha256(daily salt ‖ ip ‖ user-agent)`, truncated |
-| `path` | `/privacy.html` | validated against a strict pattern |
-| `referrer_host` | `news.ycombinator.com` | hostname only, never a full URL |
-| `created_at` | `1769644800000` | epoch ms |
+```
+date,time,visitor,path,referrer
+2026-07-29,11:08:36,823e79efbbfa4588,/,
+2026-07-29,11:08:36,823e79efbbfa4588,/privacy.html,
+2026-07-29,11:08:51,d08060ed459c77ea,/,news.ycombinator.com
+```
 
-**No IP address is stored.** The salt is 32 random bytes generated on the first
-hit of each UTC day and deleted after two days. Once a day's salt is gone, that
-day's hashes cannot be linked back to any address by anyone, including us.
+No database, no schema, no migrations. Open it in a spreadsheet, `grep` it,
+`wc -l` it, delete it. Every field is validated before being written and none
+can contain a comma, quote or newline, so it never needs quoting and a plain
+`split(',')` always works.
+
+**No IP address is stored.** `visitor` is a hash of the address, the browser's
+user agent, and a random salt that changes every UTC day. The salt lives in
+`salt.json` next to the CSV and is *overwritten* at the day boundary — so the
+moment a new day starts, the previous day's hashes can no longer be linked to
+any address by anyone, including us. There is no retention policy to remember,
+because there is nothing left to expire.
 
 That gives an honest unique-visitor count per day while leaving no personal
 data at rest — which is why the app needs no cookie banner and the privacy
@@ -35,102 +42,86 @@ Because the hash is per-day by design, a visitor returning on three days counts
 as three "visitor-days". There is deliberately no way to follow someone across
 days; that is the point.
 
+### Counting it yourself
+
+The whole point of a CSV is that you don't need the tooling:
+
+```sh
+wc -l < hits.csv                                    # total pageviews (+1 header)
+cut -d, -f3 hits.csv | tail -n +2 | sort -u | wc -l # unique visitors
+grep ^2026-07-29 hits.csv | wc -l                   # pageviews on one day
+```
+
 ## Requirements
 
-Node 22.5+ (uses the built-in `node:sqlite`). No npm dependencies — nothing to
-install, nothing to keep patched. Node 22 prints an experimental warning for
-`node:sqlite`; Node 24 does not.
+Node 16 or newer. No npm dependencies and no database — nothing to install,
+nothing to keep patched. (An earlier version needed Node 22.5+ for the built-in
+SQLite module; switching to CSV removed that requirement.)
 
 ## Deploying
 
-No DNS changes and no new subdomain: the tracker runs on the same Hetzner box
-that already serves aeroprompter.app, and nginx proxies two paths to it. That
-makes the beacon same-origin, so there is no CORS, no preflight, and no CSP
-change.
+One command on the server:
 
-1. **Create the service account and copy the files:**
+```sh
+cd /home/forge/aeroprompter.app        # wherever Forge checked the repo out
+sudo bash tracker/install.sh
+```
 
-   ```sh
-   sudo useradd --system --no-create-home --shell /usr/sbin/nologin aeroprompter
-   sudo mkdir -p /opt/aeroprompter-tracker
-   sudo cp tracker/server.mjs tracker/stats.mjs /opt/aeroprompter-tracker/
-   ```
+It checks prerequisites, creates the service account, installs the files and
+the systemd unit, starts the service, prompts for a dashboard password, and
+writes an nginx snippet. Safe to re-run — it will not reset your password or
+overwrite your config.
 
-2. **Configure:**
+Then **one line** in Forge (aeroprompter.app → Edit Files → Edit Nginx
+Configuration), inside the existing `server { ... }` block:
 
-   ```sh
-   sudo cp tracker/.env.example /etc/aeroprompter-tracker.env
-   sudo chmod 600 /etc/aeroprompter-tracker.env
-   sudoedit /etc/aeroprompter-tracker.env
-   ```
+```nginx
+include /etc/nginx/aeroprompter-tracker.conf;
+```
 
-3. **Install the unit:**
+Save; Forge reloads nginx. Done — <https://aeroprompter.app/stats>.
 
-   ```sh
-   sudo cp tracker/aeroprompter-tracker.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now aeroprompter-tracker
-   systemctl status aeroprompter-tracker
-   ```
+### If the installer stops
 
-   `StateDirectory=aeroprompter` makes systemd create `/var/lib/aeroprompter`
-   owned by the `aeroprompter` user with mode `0700`. No other service on the
-   box can read the database, and you reach it with `sudo -u aeroprompter`.
+It fails loudly with the reason rather than half-installing. The most common
+one by far:
 
-4. **Set the dashboard password:**
+**"Node X is too old"** — needs Node 16+. Fix:
 
-   ```sh
-   sudo apt install apache2-utils                      # provides htpasswd
-   sudo htpasswd -c /etc/nginx/aeroprompter-stats.htpasswd greg
-   sudo chown www-data:www-data /etc/nginx/aeroprompter-stats.htpasswd
-   sudo chmod 640 /etc/nginx/aeroprompter-stats.htpasswd
-   ```
+```sh
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+```
 
-   Use whatever username you like in place of `greg` and update
-   `nginx.example.conf` to match if you change the file path.
+**"Node is not installed, or not on root's PATH"** — Forge installs Node for
+the deploy user, not always for root:
 
-5. **Add the nginx routes** — in Forge, open the aeroprompter.app site →
-   **Edit Files → Edit Nginx Configuration**, paste the contents of
-   `tracker/nginx.example.conf` inside the existing `server { … }` block, and
-   save. Forge reloads nginx for you.
+```sh
+sudo ln -s $(which node) /usr/bin/node
+```
 
-   Both locations use `=` (exact match), which in nginx beats any prefix
-   location, so an existing `location /api/` or `location /` cannot shadow
-   them.
-
-6. **Verify:**
-
-   ```sh
-   ss -lntp | grep 8787                                 # -> 127.0.0.1:8787 only
-   sudo ls -l /var/lib/aeroprompter/hits.db             # -> -rw-------
-   curl -i https://aeroprompter.app/stats               # -> 401 before credentials
-   curl -s -o /dev/null -w '%{http_code}\n' \
-     -X POST https://aeroprompter.app/api/hit \
-     -H 'Content-Type: text/plain' -d '{"path":"/"}'    # -> 204
-   ```
-
-   Then load https://aeroprompter.app in a browser and check the count went up.
+Anything else: `journalctl -u aeroprompter-tracker -n 30`
 
 ## Reading the numbers
 
 ### In a browser
 
 <https://aeroprompter.app/stats>, behind HTTP basic auth — your browser will
-prompt for the username and password from step 4. It's a browser popup, not a
-login form. Summary cards (today / 7 days / 30 days / all time), a 30-day
+prompt for the username and password the installer asked you to choose. It's a
+browser popup, not a login form. Summary cards (today / 7 days / 30 days / all time), a 30-day
 chart, and top pages and referrers. Works on a phone.
 
 The page is server-rendered and fully self-contained: no scripts, no external
 requests, no fonts, `Cache-Control: no-store`, `noindex`, and a
-`default-src 'none'` CSP. The database is never exposed — only these rendered
+`default-src 'none'` CSP. The CSV is never exposed — only these rendered
 numbers are. Values coming from visitors' browsers (paths, referrer hosts) are
 HTML-escaped on the way out.
 
-To change the password later, re-run `htpasswd` without `-c` (which would
-overwrite the file):
+To change the password later, delete the file and re-run the installer:
 
 ```sh
-sudo htpasswd /etc/nginx/aeroprompter-stats.htpasswd greg
+sudo rm /etc/nginx/aeroprompter-stats.htpasswd
+sudo bash tracker/install.sh
 ```
 
 The credentials live in `/etc/nginx/aeroprompter-stats.htpasswd` on the server,
@@ -138,15 +129,15 @@ never in this repository.
 
 ### On the command line
 
-The database lives at `/var/lib/aeroprompter/hits.db`, owned by the
-`aeroprompter` user with mode `0700` on the directory. It is not served by
-nginx and not reachable over HTTP. SSH to the server, then:
+The CSV lives at `/var/lib/aeroprompter/hits.csv`, owned by the `aeroprompter`
+user with mode `0700` on the directory. It is not served by nginx and not
+reachable over HTTP. SSH to the server, then:
 
 ```sh
 sudo -u aeroprompter node /opt/aeroprompter-tracker/stats.mjs
 ```
 
-`stats.mjs` defaults to `/var/lib/aeroprompter/hits.db`, so no environment
+`stats.mjs` defaults to `/var/lib/aeroprompter/hits.csv`, so no environment
 variable is needed. `sudo node …` as root works too.
 
 ```
@@ -164,46 +155,21 @@ echo "alias aerostats='sudo -u aeroprompter node /opt/aeroprompter-tracker/stats
   >> ~/.bashrc
 ```
 
-### Ad-hoc SQL
+### Taking a copy
 
-`stats.mjs` is read-only and covers the usual questions, but the file is a
-plain SQLite database — query it however you like. The examples below use the
-`sqlite3` CLI, which is not installed by default (`sudo apt install sqlite3`);
-the tracker itself does not need it.
+It's a text file — just copy it:
 
 ```sh
-sudo -u aeroprompter sqlite3 /var/lib/aeroprompter/hits.db \
-  "SELECT day, COUNT(DISTINCT visitor) FROM hits GROUP BY day ORDER BY day DESC LIMIT 7;"
+scp you@server:/var/lib/aeroprompter/hits.csv .
 ```
 
-Open it read-only if you just want to look, so a stray `UPDATE` can't touch the
-data:
-
-```sh
-sudo -u aeroprompter sqlite3 -readonly /var/lib/aeroprompter/hits.db
-```
-
-### Pulling a copy to your laptop
-
-The database is in WAL mode, so take a consistent snapshot with `.backup`
-rather than `cp` — a plain copy can catch a torn write:
-
-```sh
-ssh you@server "sudo -u aeroprompter sqlite3 /var/lib/aeroprompter/hits.db \
-  \".backup /tmp/hits-snapshot.db\" && sudo chown \$USER /tmp/hits-snapshot.db"
-scp you@server:/tmp/hits-snapshot.db .
-ssh you@server "rm /tmp/hits-snapshot.db"
-node tracker/stats.mjs   # with TRACKER_DB=./hits-snapshot.db
-```
-
-Remember the snapshot is a second copy of the data — delete it when you're
-done rather than leaving it in Downloads.
+(You may need `sudo cat` into a readable location first, since the directory is
+`0700`.) Remember the copy is a second copy of the data; delete it when done.
 
 ## Backups
 
-The database is small — a few hundred KB per year at modest traffic. It runs in
-WAL mode, so copy it with `sqlite3 hits.db ".backup /path/to/backup.db"` rather
-than `cp`, which can catch a torn write.
+Append-only text, a few hundred KB per year at modest traffic. `cp` is a
+perfectly safe backup — there is no write-ahead log or locking to worry about.
 
 ## Storing raw IPs
 
@@ -212,9 +178,9 @@ of a hash. Before doing that, be aware of what changes:
 
 - IP addresses are personal data under the GDPR and the revised Swiss FADP,
   even in a private file on your own server.
-- You become responsible for a defined retention period and for deleting data
-  once it expires. The automatic salt rotation no longer protects you, because
-  there is no salt involved.
+- You become responsible for a defined retention period and for deleting rows
+  once they expire. The daily salt rotation no longer protects you, because no
+  salt is involved.
 - The privacy policy must say you store IP addresses, for how long, and on what
   legal basis. The current wording in `public/privacy.html` describes the
   hashing behaviour and would become inaccurate.
@@ -227,7 +193,16 @@ part that carries the obligations.
 
 ## Removing it
 
-Stop the service, remove the two `location` blocks from the nginx config,
-delete `/var/lib/aeroprompter` and the htpasswd file, then remove the
-`initAnalytics()` call in `public/app.js` and the visitor-counting paragraphs in
-`public/privacy.html` and `public/cookie-policy.html`. No CSP change to undo.
+Remove the `include` line from the nginx config, then:
+
+```sh
+sudo systemctl disable --now aeroprompter-tracker
+sudo rm -rf /opt/aeroprompter-tracker /var/lib/aeroprompter \
+  /etc/aeroprompter-tracker.env /etc/systemd/system/aeroprompter-tracker.service \
+  /etc/nginx/aeroprompter-tracker.conf /etc/nginx/aeroprompter-stats.htpasswd
+sudo userdel aeroprompter
+```
+
+Then in this repo, remove the `initAnalytics()` call in `public/app.js` and the
+visitor-counting paragraphs in `public/privacy.html` and
+`public/cookie-policy.html`. There is no CSP change to undo.

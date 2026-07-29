@@ -2,11 +2,11 @@
    AeroPrompter visitor counter - dashboard rendering
 
    Server-rendered, fully self-contained HTML: no scripts, no external
-   requests, no fonts. nginx puts this behind basic auth; the database itself
-   is never exposed, only these rendered numbers.
+   requests, no fonts. nginx puts this behind basic auth; the CSV itself is
+   never exposed, only these rendered numbers.
    ========================================================================== */
 
-import { dailyRows, dayOffset, summaryForDays, topPaths, topReferrers, totals, utcDay } from './queries.mjs';
+import { dailyRows, dayOffset, summaryForDays, topPaths, topReferrers, totals, utcDay } from './store.mjs';
 
 const CHART_DAYS = 30;
 
@@ -130,15 +130,15 @@ const STYLES = `
   }
 `;
 
-export function renderDashboard(db) {
-  const rows = dailyRows(db, CHART_DAYS);
+export function renderDashboard(hits) {
+  const rows = dailyRows(hits, CHART_DAYS);
   const chartRows = fillMissingDays(rows, CHART_DAYS);
 
   const today = utcDay();
   const todayRow = rows.find(row => row.day === today) || { visitors: 0, pageviews: 0 };
-  const week = summaryForDays(db, 7);
-  const month = summaryForDays(db, 30);
-  const allTime = totals(db);
+  const week = summaryForDays(hits, 7);
+  const month = summaryForDays(hits, 30);
+  const allTime = totals(hits);
 
   return `<!doctype html>
 <html lang="en">
@@ -168,12 +168,12 @@ export function renderDashboard(db) {
     { key: 'path', label: 'Path' },
     { key: 'visitors', label: 'Visitors', align: 'right' },
     { key: 'pageviews', label: 'Views', align: 'right' }
-  ], topPaths(db, 10), 'No pages recorded yet.')}
+  ], topPaths(hits, 10), 'No pages recorded yet.')}
 
   ${table('Top referrers', [
     { key: 'host', label: 'Referrer' },
     { key: 'pageviews', label: 'Views', align: 'right' }
-  ], topReferrers(db, 10), 'No external referrers yet.')}
+  ], topReferrers(hits, 10), 'No external referrers yet.')}
 
   <p class="note">
     Visitor hashes are scoped to a single UTC day, so a person returning on

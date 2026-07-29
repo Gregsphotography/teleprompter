@@ -1,0 +1,169 @@
+/* ==========================================================================
+   AeroPrompter visitor counter - CSV storage
+
+   One append-only CSV file. No database, no schema, no migrations. Open it in
+   a spreadsheet, grep it, delete it — it is just text:
+
+     date,time,visitor,path,referrer
+     2026-07-29,10:22:14,4cd525921d986e5a,/,news.ycombinator.com
+
+   Every field is validated before it is written and none of them can contain
+   a comma or newline, so parsing is a plain split and never needs quoting.
+   ========================================================================== */
+
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { dirname, join } from 'node:path';
+
+export const HEADER = 'date,time,visitor,path,referrer';
+
+export function csvPath() {
+  return process.env.TRACKER_CSV || '/var/lib/aeroprompter/hits.csv';
+}
+
+function saltPath() {
+  return join(dirname(csvPath()), 'salt.json');
+}
+
+export function utcDay(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+export function dayOffset(day, days) {
+  const date = new Date(`${day}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return utcDay(date);
+}
+
+// --- Visitor identity ----------------------------------------------------
+
+// One salt, valid for the current UTC day only. When the day rolls over the
+// old salt is overwritten and gone, so yesterday's hashes can no longer be
+// linked to any address by anyone. No retention policy to remember.
+function dailySalt(day) {
+  const path = saltPath();
+
+  if (existsSync(path)) {
+    try {
+      const stored = JSON.parse(readFileSync(path, 'utf8'));
+      if (stored.day === day) return Buffer.from(stored.salt, 'hex');
+    } catch {
+      /* unreadable or corrupt: fall through and mint a fresh one */
+    }
+  }
+
+  const salt = randomBytes(32);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ day, salt: salt.toString('hex') }), { mode: 0o600 });
+  return salt;
+}
+
+export function visitorId(day, ip, userAgent) {
+  if (process.env.TRACKER_STORE_RAW_IP === '1') return ip.replace(/[,\r\n]/g, '');
+
+  return createHash('sha256')
+    .update(dailySalt(day))
+    .update(ip)
+    .update('\u0000') // separator, so ip and user-agent can't blur together
+    .update(userAgent)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+// --- Writing -------------------------------------------------------------
+
+export function appendHit({ path, referrer }, ip, userAgent, now = new Date()) {
+  const file = csvPath();
+  mkdirSync(dirname(file), { recursive: true });
+
+  if (!existsSync(file)) {
+    writeFileSync(file, `${HEADER}\n`, { mode: 0o600 });
+  }
+
+  const iso = now.toISOString();
+  const day = iso.slice(0, 10);
+  const time = iso.slice(11, 19);
+
+  appendFileSync(file, `${day},${time},${visitorId(day, ip, userAgent)},${path},${referrer || ''}\n`);
+}
+
+// --- Reading -------------------------------------------------------------
+
+export function readHits() {
+  const file = csvPath();
+  if (!existsSync(file)) return [];
+
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .slice(1) // header
+    .filter(Boolean)
+    .map(line => {
+      const [date, time, visitor, path, referrer] = line.split(',');
+      return { date, time, visitor, path, referrer: referrer || null };
+    })
+    .filter(row => row.date && row.visitor);
+}
+
+// --- Aggregation ---------------------------------------------------------
+// Small enough to do in memory: a few hundred KB per year at modest traffic.
+
+export function dailyRows(hits, days = 30) {
+  const byDay = new Map();
+
+  for (const hit of hits) {
+    if (!byDay.has(hit.date)) byDay.set(hit.date, { day: hit.date, visitors: new Set(), pageviews: 0 });
+    const entry = byDay.get(hit.date);
+    entry.visitors.add(hit.visitor);
+    entry.pageviews += 1;
+  }
+
+  return [...byDay.values()]
+    .map(entry => ({ day: entry.day, visitors: entry.visitors.size, pageviews: entry.pageviews }))
+    .sort((a, b) => b.day.localeCompare(a.day))
+    .slice(0, days);
+}
+
+export function summaryForDays(hits, days) {
+  const since = dayOffset(utcDay(), -(days - 1));
+  const recent = hits.filter(hit => hit.date >= since);
+  return {
+    visitors: new Set(recent.map(hit => `${hit.date}|${hit.visitor}`)).size,
+    pageviews: recent.length
+  };
+}
+
+export function totals(hits) {
+  const days = hits.map(hit => hit.date).sort();
+  return {
+    visitors: new Set(hits.map(hit => `${hit.date}|${hit.visitor}`)).size,
+    pageviews: hits.length,
+    first_day: days[0] || null,
+    last_day: days[days.length - 1] || null
+  };
+}
+
+function topBy(hits, key, limit) {
+  const counts = new Map();
+  const visitors = new Map();
+
+  for (const hit of hits) {
+    const value = hit[key];
+    if (!value) continue;
+    counts.set(value, (counts.get(value) || 0) + 1);
+    if (!visitors.has(value)) visitors.set(value, new Set());
+    visitors.get(value).add(`${hit.date}|${hit.visitor}`);
+  }
+
+  return [...counts.entries()]
+    .map(([value, pageviews]) => ({ value, pageviews, visitors: visitors.get(value).size }))
+    .sort((a, b) => b.pageviews - a.pageviews)
+    .slice(0, limit);
+}
+
+export function topPaths(hits, limit = 20) {
+  return topBy(hits, 'path', limit).map(row => ({ path: row.value, pageviews: row.pageviews, visitors: row.visitors }));
+}
+
+export function topReferrers(hits, limit = 20) {
+  return topBy(hits, 'referrer', limit).map(row => ({ host: row.value, pageviews: row.pageviews }));
+}
