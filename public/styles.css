@@ -1932,17 +1932,35 @@ body.colorblind-mode .prompter-word.spoken {
   transition-duration: 0s;
 }
 
+/* Words wrap as inline-block spans, so anything here that changes the element's
+   box re-wraps the whole paragraph and makes the current word jump a line.
+   Never set padding, font-weight, border, margin, letter-spacing, line-height
+   or transform: scale() on this rule — paint outside the box instead. */
 body.colorblind-mode .prompter-word.current-word {
   color: #111827;
   background-color: #fde047;
-  box-shadow: 0 0 0 3px rgba(253, 224, 71, 0.36);
+  border-radius: 6px;
   filter: none;
   opacity: 1;
-  font-weight: 800;
-  border-radius: 6px;
-  padding: 0 0.16em 0.04em;
-  text-decoration: none;
-  border-bottom: 0.14em solid #f8fafc;
+
+  /* Horizontally-offset shadow copies widen the chip without growing the box.
+     A uniform spread would also grow it vertically into the neighbouring
+     lines, since each word is already a full line-height tall. */
+  box-shadow:
+    -0.14em 0 0 0 #fde047,
+    0.14em 0 0 0 #fde047,
+    -0.14em 0 0 3px rgba(253, 224, 71, 0.36),
+    0.14em 0 0 3px rgba(253, 224, 71, 0.36);
+
+  /* Faux weight: thickens the glyphs without changing their advance width. */
+  text-shadow: 0 0 0.02em currentColor;
+
+  /* Layout-neutral replacement for the old border-bottom. */
+  text-decoration: underline;
+  text-decoration-color: #f8fafc;
+  text-decoration-thickness: 0.1em;
+  text-underline-offset: 0.16em;
+
   transition-property: none;
   transition-duration: 0s;
 }
