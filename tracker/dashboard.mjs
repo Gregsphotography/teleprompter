@@ -2,7 +2,7 @@
    AeroPrompter visitor counter - dashboard rendering
 
    Server-rendered, fully self-contained HTML: no scripts, no external
-   requests, no fonts. Caddy puts this behind basic auth; the database itself
+   requests, no fonts. nginx puts this behind basic auth; the database itself
    is never exposed, only these rendered numbers.
    ========================================================================== */
 

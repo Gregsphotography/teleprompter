@@ -7,7 +7,10 @@
    counted without anything personal being stored.
    ========================================================================== */
 
-const ANALYTICS_ENDPOINT = 'https://stats.aeroprompter.app/hit';
+// Same-origin: nginx proxies this path to the tracker on loopback. Being
+// same-origin means no CORS, no preflight, and no CSP change — connect-src
+// 'self' already covers it.
+const ANALYTICS_ENDPOINT = '/api/hit';
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '']);
 
@@ -42,9 +45,9 @@ export function sendHit() {
 
   const body = JSON.stringify(payload);
 
-  // text/plain keeps this a CORS "simple request" — an application/json body
-  // would trigger a preflight, and sendBeacon drops the beacon silently if the
-  // preflight fails. The body is still JSON; the server parses it as such.
+  // sendBeacon can only set a content type via the Blob's type. text/plain is
+  // what it defaults to for a string body anyway; the body is JSON and the
+  // server parses it as such.
   const CONTENT_TYPE = 'text/plain;charset=UTF-8';
 
   // Counting must never surface to the user or delay anything: fire and forget,
@@ -60,7 +63,6 @@ export function sendHit() {
       headers: { 'Content-Type': CONTENT_TYPE },
       body,
       keepalive: true,
-      mode: 'cors',
       credentials: 'omit'
     }).catch(() => {});
   } catch {

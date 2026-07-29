@@ -114,10 +114,8 @@ test('colourblind highlight never re-wraps the paragraph', async ({ page }) => {
 });
 
 test('visitor counter stays silent in dev and sends one clean beacon in production', async ({ page }) => {
-  const ANALYTICS_HOST = 'https://stats.aeroprompter.app';
-
   const beacons = [];
-  await page.route(`${ANALYTICS_HOST}/**`, route => {
+  await page.route('**/api/hit', route => {
     beacons.push(route.request().postData());
     return route.fulfill({ status: 204, body: '' });
   });
