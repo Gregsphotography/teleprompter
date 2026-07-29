@@ -1,0 +1,34 @@
+[Unit]
+Description=AeroPrompter visitor counter
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/aeroprompter-tracker/server.mjs
+EnvironmentFile=/etc/aeroprompter-tracker.env
+Restart=always
+RestartSec=5
+
+# Runs as a transient unprivileged user; /var/lib/aeroprompter is created and
+# owned by it automatically, which is what keeps the database off the web and
+# away from every other service on the box.
+DynamicUser=yes
+StateDirectory=aeroprompter
+StateDirectoryMode=0700
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

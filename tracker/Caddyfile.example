@@ -1,0 +1,32 @@
+# AeroPrompter tracker — append to /etc/caddy/Caddyfile
+#
+# Caddy terminates TLS, sets X-Forwarded-For (which the tracker trusts for the
+# visitor hash) and proxies to the loopback service. Nothing else is exposed.
+
+stats.aeroprompter.app {
+	encode zstd gzip
+
+	# Only the beacon endpoint and a health check are reachable. Everything
+	# else — above all the database file — 404s.
+	@tracker path /hit /health
+	handle @tracker {
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	handle {
+		respond 404
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	log {
+		# The app already counts visitors; access logs would duplicate that in a
+		# form that does contain IPs. Discard them.
+		output discard
+	}
+}

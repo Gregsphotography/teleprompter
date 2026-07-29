@@ -16,6 +16,7 @@ import {
   setupResponsiveLayoutListeners
 } from './js/prompter.js';
 import { initSpeechRecognition } from './js/voice.js';
+import { initAnalytics } from './js/analytics.js';
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
@@ -39,6 +40,9 @@ function init() {
   setupPanelResize();
   initSpeechRecognition();
   registerServiceWorker();
+
+  // Last, and never before the app is usable
+  initAnalytics();
 
   // Ensure debounced edits reach localStorage when the tab is hidden or closed
   document.addEventListener('visibilitychange', () => {

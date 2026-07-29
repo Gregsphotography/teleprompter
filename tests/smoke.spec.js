@@ -113,6 +113,42 @@ test('colourblind highlight never re-wraps the paragraph', async ({ page }) => {
   await page.keyboard.press('Escape');
 });
 
+test('visitor counter stays silent in dev and sends one clean beacon in production', async ({ page }) => {
+  const ANALYTICS_HOST = 'https://stats.aeroprompter.app';
+
+  const beacons = [];
+  await page.route(`${ANALYTICS_HOST}/**`, route => {
+    beacons.push(route.request().postData());
+    return route.fulfill({ status: 204, body: '' });
+  });
+
+  await page.goto('/');
+
+  // The guard must reject the test/dev environment: http on loopback
+  const tracks = await page.evaluate(async () => {
+    const { shouldTrack } = await import('/js/analytics.js');
+    return shouldTrack();
+  });
+  expect(tracks).toBe(false);
+
+  // ...and so loading the app must not have emitted anything
+  expect(beacons).toHaveLength(0);
+
+  // Drive the send path directly to check the payload it would produce
+  await page.evaluate(async () => {
+    const { sendHit } = await import('/js/analytics.js');
+    sendHit();
+  });
+  await expect.poll(() => beacons.length).toBe(1);
+
+  const payload = JSON.parse(beacons[0]);
+  expect(payload.path).toBe('/');
+  // Only a path (and optionally a referrer host) may ever leave the browser
+  expect(Object.keys(payload).every(key => ['path', 'ref'].includes(key))).toBe(true);
+  expect(beacons[0]).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
+  expect(beacons[0]).not.toContain('http');
+});
+
 test('export produces valid JSON and import round-trips', async ({ page }) => {
   const downloadPromise = page.waitForEvent('download');
   await page.click('#btn-export-scripts');
