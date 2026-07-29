@@ -1,117 +1,32 @@
 /* ==========================================================================
    AeroPrompter visitor counter
 
-   A single Node process, no dependencies, bound to loopback. nginx (managed by
-   Forge) serves aeroprompter.app and proxies /api/hit and /stats here, so the
-   tracker is same-origin with the site and never needs CORS.
+   A single Node process, no dependencies, bound to loopback. nginx serves
+   aeroprompter.app and proxies /api/hit and /stats here, so the tracker is
+   same-origin with the site and never needs CORS.
 
-   By default no personal data is stored. Each hit is attributed to
-   sha256(daily salt || ip || user-agent); the salt is random per UTC day and
-   deleted after two days, at which point the hashes cannot be linked back to
-   any address. Set TRACKER_STORE_RAW_IP=1 to store raw IPs instead — see
+   Storage is one append-only CSV file. No IP addresses are written: each hit
+   is attributed to a hash of a salt that changes daily and is overwritten
+   when it does. Set TRACKER_STORE_RAW_IP=1 to store raw IPs instead — see
    README.md for what that obliges you to do.
    ========================================================================== */
 
 import { createServer } from 'node:http';
-import { createHash, randomBytes } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
-import { chmodSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { appendHit, csvPath, readHits } from './store.mjs';
 import { renderDashboard } from './dashboard.mjs';
-import { dayOffset, utcDay } from './queries.mjs';
 
 const PORT = Number(process.env.TRACKER_PORT || 8787);
 const HOST = process.env.TRACKER_HOST || '127.0.0.1';
-const DB_PATH = process.env.TRACKER_DB || '/var/lib/aeroprompter/hits.db';
-const STORE_RAW_IP = process.env.TRACKER_STORE_RAW_IP === '1';
 
 const MAX_BODY_BYTES = 4 * 1024;
 const MAX_PATH_LENGTH = 512;
 const MAX_REFERRER_LENGTH = 253;
-const SALT_RETENTION_DAYS = 2;
 
-// Generous enough for any real visitor, low enough that a single source can't
-// inflate the numbers. Same shape as the limiter in api/feedback.js, but this
-// is one long-lived process so the bucket map is actually authoritative.
+// Generous for any real visitor, low enough that one source can't inflate the
+// numbers. This is a single long-lived process, so the map is authoritative.
 const RATE_LIMIT_MAX = 60;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 const rateBuckets = new Map();
-
-// --- Storage -------------------------------------------------------------
-
-mkdirSync(dirname(DB_PATH), { recursive: true });
-
-const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA synchronous = NORMAL');
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS hits (
-    id            INTEGER PRIMARY KEY,
-    day           TEXT NOT NULL,
-    visitor       TEXT NOT NULL,
-    path          TEXT NOT NULL,
-    referrer_host TEXT,
-    created_at    INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS hits_day_idx ON hits(day);
-  CREATE INDEX IF NOT EXISTS hits_day_visitor_idx ON hits(day, visitor);
-
-  CREATE TABLE IF NOT EXISTS salts (
-    day  TEXT PRIMARY KEY,
-    salt BLOB NOT NULL
-  );
-`);
-
-// The DB may hold a day or two of live salts, so keep it owner-only.
-try {
-  chmodSync(DB_PATH, 0o600);
-} catch {
-  /* best effort: a pre-existing file owned by another user shouldn't crash startup */
-}
-
-const insertHit = db.prepare(
-  'INSERT INTO hits (day, visitor, path, referrer_host, created_at) VALUES (?, ?, ?, ?, ?)'
-);
-const selectSalt = db.prepare('SELECT salt FROM salts WHERE day = ?');
-const insertSalt = db.prepare('INSERT OR IGNORE INTO salts (day, salt) VALUES (?, ?)');
-const deleteOldSalts = db.prepare('DELETE FROM salts WHERE day < ?');
-
-// --- Visitor identity ----------------------------------------------------
-
-let cachedSaltDay = null;
-let cachedSalt = null;
-
-function getDailySalt(day) {
-  if (cachedSaltDay === day) return cachedSalt;
-
-  const existing = selectSalt.get(day);
-  if (existing) {
-    cachedSalt = Buffer.from(existing.salt);
-  } else {
-    cachedSalt = randomBytes(32);
-    insertSalt.run(day, cachedSalt);
-    // Rolling into a new day is the natural moment to drop expired salts.
-    deleteOldSalts.run(dayOffset(day, -SALT_RETENTION_DAYS));
-  }
-
-  cachedSaltDay = day;
-  return cachedSalt;
-}
-
-function visitorId(day, ip, userAgent) {
-  if (STORE_RAW_IP) return ip;
-
-  return createHash('sha256')
-    .update(getDailySalt(day))
-    .update(ip)
-    .update('\u0000') // explicit separator so ip+ua can't blur together
-    .update(userAgent)
-    .digest('hex')
-    .slice(0, 32);
-}
-
-// --- Request helpers -----------------------------------------------------
 
 function isRateLimited(ip) {
   const now = Date.now();
@@ -152,7 +67,8 @@ async function readJsonBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
 }
 
-// Only same-site app paths are recorded, so a forged body can't write junk.
+// The character classes here are what guarantee the CSV never needs quoting:
+// neither pattern admits a comma, quote or newline.
 function normalizePath(value) {
   const path = String(value || '/').trim();
   if (!path.startsWith('/') || path.length > MAX_PATH_LENGTH) return null;
@@ -168,13 +84,8 @@ function normalizeReferrerHost(value) {
   return host;
 }
 
-// --- Server --------------------------------------------------------------
-
 const server = createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-
-  // No CORS handling: nginx serves the site and this tracker from one origin,
-  // so the beacon is a same-origin request and never preflights.
 
   if (url.pathname === '/health' && req.method === 'GET') {
     res.statusCode = 200;
@@ -182,12 +93,12 @@ const server = createServer((req, res) => {
     return res.end('ok\n');
   }
 
-  // nginx gates this behind basic auth. The service binds to loopback, so an
-  // unauthenticated request can't reach here in the first place.
+  // nginx gates this behind basic auth, and the service binds to loopback, so
+  // an unauthenticated request can't reach here in the first place.
   if ((url.pathname === '/dashboard' || url.pathname === '/dashboard/') && req.method === 'GET') {
     let html;
     try {
-      html = renderDashboard(db);
+      html = renderDashboard(readHits());
     } catch (error) {
       console.error('Dashboard render failed:', error.message);
       res.statusCode = 500;
@@ -201,7 +112,6 @@ const server = createServer((req, res) => {
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    // The page is self-contained: no scripts, no external requests at all.
     res.setHeader(
       'Content-Security-Policy',
       "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
@@ -225,8 +135,6 @@ const server = createServer((req, res) => {
 });
 
 async function handleHit(req) {
-  // The client sends a JSON body as text/plain so the request stays a CORS
-  // simple request and needs no preflight; accept both spellings.
   const contentType = String(req.headers['content-type'] || '').toLowerCase();
   if (!contentType.includes('application/json') && !contentType.includes('text/plain')) {
     req.resume();
@@ -244,26 +152,20 @@ async function handleHit(req) {
   const path = normalizePath(body.path);
   if (!path) throw new Error('Invalid path');
 
-  const referrerHost = normalizeReferrerHost(body.ref);
-  const day = utcDay();
   const userAgent = String(req.headers['user-agent'] || '').slice(0, 512);
-
-  insertHit.run(day, visitorId(day, ip, userAgent), path, referrerHost, Date.now());
+  appendHit({ path, referrer: normalizeReferrerHost(body.ref) }, ip, userAgent);
 }
 
 server.listen(PORT, HOST, () => {
   console.log(`AeroPrompter tracker listening on http://${HOST}:${PORT}`);
-  console.log(`Database: ${DB_PATH}`);
-  console.log(STORE_RAW_IP
+  console.log(`Writing to ${csvPath()}`);
+  console.log(process.env.TRACKER_STORE_RAW_IP === '1'
     ? 'WARNING: storing raw IP addresses (TRACKER_STORE_RAW_IP=1)'
     : 'Storing daily-rotating salted hashes; no personal data at rest');
 });
 
 function shutdown() {
-  server.close(() => {
-    db.close();
-    process.exit(0);
-  });
+  server.close(() => process.exit(0));
 }
 
 process.on('SIGTERM', shutdown);

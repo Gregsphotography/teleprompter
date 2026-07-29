@@ -2,20 +2,17 @@
 /* ==========================================================================
    AeroPrompter visitor counter - read-only reporting
 
-   Run over SSH on the server holding the database. Nothing here is exposed
-   to the web; this CLI is the only way to read the data.
+   Reads the CSV. You can equally just open the file — this is only here so
+   you don't have to count rows by hand.
 
-     node tracker/stats.mjs              last 30 days
-     node tracker/stats.mjs --days 90    a longer window
-     node tracker/stats.mjs --total      all-time totals
-     node tracker/stats.mjs --paths      most visited paths
-     node tracker/stats.mjs --referrers  where visitors came from
+     node stats.mjs              last 30 days
+     node stats.mjs --days 90    a longer window
+     node stats.mjs --total      all-time totals
+     node stats.mjs --paths      most visited paths
+     node stats.mjs --referrers  where visitors came from
    ========================================================================== */
 
-import { DatabaseSync } from 'node:sqlite';
-import { dailyRows, topPaths, topReferrers, totals } from './queries.mjs';
-
-const DB_PATH = process.env.TRACKER_DB || '/var/lib/aeroprompter/hits.db';
+import { csvPath, dailyRows, readHits, topPaths, topReferrers, totals } from './store.mjs';
 
 const args = process.argv.slice(2);
 
@@ -29,13 +26,11 @@ function flagValue(name, fallback) {
 const days = flagValue('--days', 30);
 const limit = flagValue('--limit', 20);
 
-let db;
-try {
-  db = new DatabaseSync(DB_PATH, { readOnly: true });
-} catch (error) {
-  console.error(`Could not open ${DB_PATH}: ${error.message}`);
-  console.error('Set TRACKER_DB if the database lives elsewhere.');
-  process.exit(1);
+const hits = readHits();
+
+if (hits.length === 0) {
+  console.log(`\nNo visits recorded yet (${csvPath()} is empty or missing).\n`);
+  process.exit(0);
 }
 
 function pad(value, width) {
@@ -68,35 +63,29 @@ function printTable(rows, columns) {
 }
 
 if (args.includes('--total')) {
-  const summary = totals(db);
-
+  const summary = totals(hits);
   console.log('\nAll time');
-  console.log(`  Pageviews:          ${summary.pageviews ?? 0}`);
+  console.log(`  Pageviews:          ${summary.pageviews}`);
   // Hashes are per-day by design, so this counts visitor-days, not people.
-  console.log(`  Visitor-days:       ${summary.visitors ?? 0}`);
-  console.log(`  Range:              ${summary.first_day || 'n/a'} to ${summary.last_day || 'n/a'}\n`);
+  console.log(`  Visitor-days:       ${summary.visitors}`);
+  console.log(`  Range:              ${summary.first_day} to ${summary.last_day}\n`);
 } else if (args.includes('--paths')) {
-  const rows = topPaths(db, limit);
-
   console.log(`\nTop paths (limit ${limit})\n`);
-  printTable(rows, [
+  printTable(topPaths(hits, limit), [
     { key: 'path', label: 'PATH' },
     { key: 'visitors', label: 'VISITORS', align: 'right' },
     { key: 'pageviews', label: 'VIEWS', align: 'right' }
   ]);
   console.log('');
 } else if (args.includes('--referrers')) {
-  const rows = topReferrers(db, limit);
-
   console.log(`\nTop referrers (limit ${limit})\n`);
-  printTable(rows, [
+  printTable(topReferrers(hits, limit), [
     { key: 'host', label: 'REFERRER' },
     { key: 'pageviews', label: 'VIEWS', align: 'right' }
   ]);
   console.log('');
 } else {
-  const rows = dailyRows(db, days);
-
+  const rows = dailyRows(hits, days);
   console.log(`\nLast ${days} days\n`);
   printTable(rows, [
     { key: 'day', label: 'DAY' },
@@ -104,12 +93,10 @@ if (args.includes('--total')) {
     { key: 'pageviews', label: 'VIEWS', align: 'right' }
   ]);
 
-  const totals = rows.reduce((acc, row) => ({
+  const sum = rows.reduce((acc, row) => ({
     visitors: acc.visitors + row.visitors,
     pageviews: acc.pageviews + row.pageviews
   }), { visitors: 0, pageviews: 0 });
 
-  console.log(`\n  Sum over window: ${totals.visitors} visitor-days, ${totals.pageviews} pageviews\n`);
+  console.log(`\n  Sum over window: ${sum.visitors} visitor-days, ${sum.pageviews} pageviews\n`);
 }
-
-db.close();

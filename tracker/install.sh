@@ -36,22 +36,16 @@ command -v node >/dev/null 2>&1 || die "Node is not installed, or not on root's 
   Forge installs it for the deploy user. Try:  sudo ln -s \$(which node) /usr/bin/node"
 
 NODE_VERSION="$(node -p 'process.versions.node')"
-NODE_OK="$(node -p 'const [a,b]=process.versions.node.split(".").map(Number); (a>22||(a===22&&b>=5))?"yes":"no"')"
+NODE_MAJOR="$(node -p 'parseInt(process.versions.node,10)')"
 
-if [ "$NODE_OK" != "yes" ]; then
-  die "Node $NODE_VERSION is too old. The tracker needs 22.5+ for the built-in
-  SQLite module (node:sqlite). Without it the service crashes on start with
-  'Cannot find module node:sqlite'.
-
-  Upgrade on Ubuntu:
+# Storage is a CSV file, so there is no SQLite and no exotic version floor.
+# Anything with stable ESM will do.
+[ "$NODE_MAJOR" -ge 16 ] || die "Node $NODE_VERSION is too old; 16+ needed. Upgrade with:
     curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-    sudo apt install -y nodejs
-
-  Then re-run this script."
-fi
+    sudo apt install -y nodejs"
 ok "Node $NODE_VERSION"
 
-for f in server.mjs stats.mjs queries.mjs dashboard.mjs; do
+for f in server.mjs stats.mjs store.mjs dashboard.mjs; do
   [ -f "$SRC_DIR/$f" ] || die "Missing $SRC_DIR/$f — run this from the repo checkout."
 done
 ok "Tracker sources found in $SRC_DIR"
@@ -70,13 +64,13 @@ fi
 
 say "Installing to $APP_DIR"
 mkdir -p "$APP_DIR"
-cp "$SRC_DIR"/server.mjs "$SRC_DIR"/stats.mjs "$SRC_DIR"/queries.mjs "$SRC_DIR"/dashboard.mjs "$APP_DIR/"
+cp "$SRC_DIR"/server.mjs "$SRC_DIR"/stats.mjs "$SRC_DIR"/store.mjs "$SRC_DIR"/dashboard.mjs "$APP_DIR/"
 ok "Copied 4 files"
 
 mkdir -p "$DB_DIR"
 chown "$SERVICE_USER":"$SERVICE_USER" "$DB_DIR" 2>/dev/null || true
 chmod 700 "$DB_DIR"
-ok "Database directory $DB_DIR (0700, owned by $SERVICE_USER)"
+ok "Data directory $DB_DIR (0700, owned by $SERVICE_USER)"
 
 # --- 4. Configuration -------------------------------------------------------
 
@@ -88,7 +82,7 @@ else
   cat > "$ENV_FILE" <<ENVEOF
 TRACKER_HOST=127.0.0.1
 TRACKER_PORT=$PORT
-TRACKER_DB=/var/lib/aeroprompter/hits.db
+TRACKER_CSV=/var/lib/aeroprompter/hits.csv
 # Set to 1 to store raw IPs instead of daily-rotating hashes.
 # Read the "Storing raw IPs" section of README.md first.
 TRACKER_STORE_RAW_IP=0
