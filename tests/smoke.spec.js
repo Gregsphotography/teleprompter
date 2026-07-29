@@ -113,6 +113,118 @@ test('colourblind highlight never re-wraps the paragraph', async ({ page }) => {
   await page.keyboard.press('Escape');
 });
 
+// Opens the prompter with nothing running, so a test can drive the scroll
+// physics itself. Dynamic import() shares the app's live module instances.
+async function openIdlePrompter(page) {
+  await page.locator('label.switch:has(#config-auto-start)').click();
+  await expect(page.locator('#config-auto-start')).not.toBeChecked();
+
+  await page.click('#btn-launch');
+  await expect(page.locator('.prompter-word').first()).toBeVisible();
+
+  // Word offsets and the reading band are measured 300ms after launch
+  await expect
+    .poll(() => page.evaluate(async () => (await import('/js/core.js')).state.wordOffsets.length))
+    .toBeGreaterThan(0);
+}
+
+const readState = (page, key) =>
+  page.evaluate(async prop => (await import('/js/core.js')).state[prop], key);
+
+const viewportScrollTop = page =>
+  page.evaluate(() => document.getElementById('prompter-viewport').scrollTop);
+
+test('voice scrolling converges on its target instead of stalling', async ({ page }) => {
+  await openIdlePrompter(page);
+
+  // The loop's own scrollTop writes used to fire scroll events that collapsed
+  // targetScrollY back onto currentScrollY, so it stalled one 8% step in.
+  await page.evaluate(async () => {
+    const { state } = await import('/js/core.js');
+    const { startVoiceScrollLoop } = await import('/js/voice.js');
+
+    state.scrollMode = 'voice';
+    state.isPlaying = true;
+    state.currentWordIndex = 0; // near the top, so the reading floor stays out of it
+    state.currentScrollY = 0;
+    state.targetScrollY = 400;
+    startVoiceScrollLoop();
+  });
+
+  await expect.poll(() => viewportScrollTop(page), { timeout: 5000 }).toBeGreaterThan(390);
+  await expect.poll(() => readState(page, 'targetScrollY')).toBe(400);
+
+  await page.keyboard.press('Escape');
+});
+
+test('the reading point never sinks into the reserved bottom band', async ({ page }) => {
+  await openIdlePrompter(page);
+
+  // Park the scroll at the very top with the reader far down the script and no
+  // target pulling forward: only the reading floor can rescue the reading point.
+  const band = await page.evaluate(async () => {
+    const { state } = await import('/js/core.js');
+    const { setActiveWordHighlight } = await import('/js/prompter.js');
+    const { startVoiceScrollLoop } = await import('/js/voice.js');
+
+    const index = Math.min(120, state.wordOffsets.length - 1);
+    state.scrollMode = 'voice';
+    state.isPlaying = true;
+    state.currentWordIndex = index;
+    setActiveWordHighlight(index);
+    state.currentScrollY = 0;
+    state.targetScrollY = 0;
+    startVoiceScrollLoop();
+
+    const offset = state.wordOffsets[index];
+    return {
+      floorY: state.readingFloorY,
+      slack: (offset.lineAdvance || offset.height) * 1.5
+    };
+  });
+
+  expect(band.floorY).toBeGreaterThan(0);
+
+  const wordDepth = () => page.evaluate(() => {
+    const viewport = document.getElementById('prompter-viewport');
+    const word = document.querySelector('.prompter-word.current-word');
+    return word.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
+  });
+
+  await expect.poll(wordDepth, { timeout: 5000 }).toBeLessThan(band.floorY + band.slack + 2);
+
+  // ...and that floor is genuinely clear of the bottom of the screen
+  const viewportHeight = await page.evaluate(
+    () => document.getElementById('prompter-viewport').clientHeight);
+  expect(band.floorY).toBeLessThan(viewportHeight * 0.85);
+
+  await page.keyboard.press('Escape');
+});
+
+test('a manual scroll still overrides voice tracking', async ({ page }) => {
+  await openIdlePrompter(page);
+
+  await page.evaluate(async () => {
+    const { state } = await import('/js/core.js');
+    const { startVoiceScrollLoop } = await import('/js/voice.js');
+
+    state.scrollMode = 'voice';
+    state.isPlaying = true;
+    state.currentWordIndex = 0;
+    state.currentScrollY = 0;
+    state.targetScrollY = 0;
+    startVoiceScrollLoop();
+  });
+
+  // Ignoring our own writes must not also ignore the reader's
+  await page.mouse.move(400, 300);
+  await page.mouse.wheel(0, 500);
+
+  await expect.poll(() => readState(page, 'targetScrollY'), { timeout: 5000 }).toBeGreaterThan(100);
+
+  await page.keyboard.press('Escape');
+});
+
 test('visitor counter stays silent in dev and sends one clean beacon in production', async ({ page }) => {
   const beacons = [];
   await page.route('**/api/hit', route => {

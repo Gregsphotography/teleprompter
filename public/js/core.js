@@ -21,6 +21,7 @@ export const state = {
   targetScrollY: 0,
   lastTime: 0,
   scrollLoopId: 0,       // Generation counter so stale RAF loops self-terminate
+  lastProgrammaticScrollTop: -1, // Lets the scroll listener ignore our own writes
 
   // Voice engine tracking
   recognition: null,
@@ -38,6 +39,10 @@ export const state = {
 
   // Cached auto-scroll rate (recomputed on launch/resize/WPM change)
   autoScrollPixelsPerSecond: 0,
+
+  // Cached reading-band geometry (recomputed alongside the word offsets)
+  readingFloorY: 0,      // Deepest on-screen Y the active word may occupy
+  maxScrollY: 0,         // scrollHeight - clientHeight
 
   // Debounced persistence
   persistTimeout: null,
@@ -134,6 +139,8 @@ export const DOM = {
   configVoiceLang: document.getElementById('config-voice-lang'),
   configFocusPosition: document.getElementById('config-focus-position'),
   displayFocusPosition: document.getElementById('display-focus-position'),
+  configMobileFocusPosition: document.getElementById('config-mobile-focus-position'),
+  displayMobileFocusPosition: document.getElementById('display-mobile-focus-position'),
   containerVoiceScroll: document.getElementById('container-voice-control'),
   
   // Displays

@@ -104,6 +104,9 @@ export function loadActiveScriptIntoEditor() {
 
   DOM.configFocusPosition.value = script.focusPosition || 50;
   DOM.displayFocusPosition.textContent = `${DOM.configFocusPosition.value}%`;
+
+  DOM.configMobileFocusPosition.value = script.mobileFocusPosition ?? 40;
+  DOM.displayMobileFocusPosition.textContent = `${DOM.configMobileFocusPosition.value}%`;
   
   // Set Scroll Modes
   const isVoice = isVoiceScrollEnabled(script);
@@ -414,7 +417,14 @@ export function setupEditorListeners() {
     const val = parseInt(DOM.configFocusPosition.value) || 50;
     DOM.displayFocusPosition.textContent = `${val}%`;
     updateActiveScriptState('focusPosition', val);
-    applyFocusPosition(val);
+    applyFocusPosition();
+  });
+
+  DOM.configMobileFocusPosition.addEventListener('input', () => {
+    const val = parseInt(DOM.configMobileFocusPosition.value) || 40;
+    DOM.displayMobileFocusPosition.textContent = `${val}%`;
+    updateActiveScriptState('mobileFocusPosition', val);
+    applyFocusPosition();
   });
   
   // Handle Mutually Exclusive Scroll Modes

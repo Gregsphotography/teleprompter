@@ -16,7 +16,8 @@ import {
   updateHUDButtonState,
   setActiveWordHighlight,
   clearWordHighlights,
-  getFocusPositionRatio
+  getFocusPositionRatio,
+  applyViewportScroll
 } from './prompter.js';
 
 export function initSpeechRecognition() {
@@ -230,9 +231,25 @@ function scrollToWordIndex(index) {
   }
 }
 
-function startVoiceScrollLoop() {
+// How hard the viewport pulls once the reading point enters the reserved band at
+// the bottom of the screen, and how far past the floor it may ever slip. Raising
+// CATCHUP_LERP to 1 turns the recovery into an instant snap.
+const CATCHUP_LERP = 0.35;
+const MAX_FLOOR_SLACK_LINES = 1.5;
+
+export function startVoiceScrollLoop() {
   const loopId = ++state.scrollLoopId;
   requestAnimationFrame(() => renderVoiceScrollTicker(loopId));
+}
+
+// Lowest scroll position that still keeps the active word out of the reserved
+// bottom band, or null when the word's geometry has not been measured yet.
+function getReadingFloorScrollY() {
+  const wordOffset = state.wordOffsets[state.currentWordIndex];
+  if (!wordOffset || !state.readingFloorY) return null;
+
+  const lineProgress = wordOffset.lineFraction * wordOffset.lineAdvance;
+  return wordOffset.top + lineProgress - state.readingFloorY;
 }
 
 function renderVoiceScrollTicker(loopId) {
@@ -240,12 +257,34 @@ function renderVoiceScrollTicker(loopId) {
 
   // Gently slide the viewport scroll position towards the target vertical Y coordinate
   const diff = state.targetScrollY - state.currentScrollY;
+  let moved = false;
 
   if (Math.abs(diff) > 0.5) {
     // Elegant proportional LERP interpolation
     state.currentScrollY += diff * 0.08;
-    DOM.prompterViewport.scrollTop = Math.round(state.currentScrollY);
+    moved = true;
   }
+
+  // The reading point must never drift into the reserved band at the bottom of
+  // the screen, however far behind the scroll has fallen. Approaching it pulls
+  // the viewport along faster; the slack clamp is the hard guarantee.
+  const floorScrollY = getReadingFloorScrollY();
+  if (floorScrollY !== null && state.currentScrollY < floorScrollY) {
+    const wordOffset = state.wordOffsets[state.currentWordIndex];
+    const slack = (wordOffset.lineAdvance || wordOffset.height) * MAX_FLOOR_SLACK_LINES;
+
+    state.currentScrollY += (floorScrollY - state.currentScrollY) * CATCHUP_LERP;
+    state.currentScrollY = Math.max(state.currentScrollY, floorScrollY - slack);
+    moved = true;
+  }
+
+  // Clamp to what the document can actually scroll, so the floor cannot demand
+  // room that does not exist at the end of the script and currentScrollY cannot
+  // run away past the maximum and stall the next resume.
+  state.currentScrollY = Math.min(Math.max(state.currentScrollY, 0), state.maxScrollY);
+  state.targetScrollY = Math.min(Math.max(state.targetScrollY, 0), state.maxScrollY);
+
+  if (moved) applyViewportScroll(state.currentScrollY);
 
   requestAnimationFrame(() => renderVoiceScrollTicker(loopId));
 }

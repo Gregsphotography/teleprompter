@@ -91,6 +91,7 @@ export function normalizeScript(rawScript, fallbackIndex = 0) {
     voiceScroll: rawScript.voiceScroll !== false,
     focusOverlay: rawScript.focusOverlay !== false,
     focusPosition: clampNumber(rawScript.focusPosition, 30, 70, 50),
+    mobileFocusPosition: clampNumber(rawScript.mobileFocusPosition, 20, 70, 40),
     fontFamily: ['sans', 'serif', 'mono'].includes(rawScript.fontFamily) ? rawScript.fontFamily : 'sans',
     updatedAt: Number.isFinite(rawScript.updatedAt) ? rawScript.updatedAt : now
   };
