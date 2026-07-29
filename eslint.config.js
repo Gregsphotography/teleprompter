@@ -56,6 +56,23 @@ module.exports = [
     }
   },
   {
+    files: ['tracker/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        ...globals.node
+      }
+    },
+    rules: {
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      'no-undef': 'error',
+      eqeqeq: ['error', 'smart'],
+      'no-var': 'error',
+      'prefer-const': 'error'
+    }
+  },
+  {
     files: ['tests/**/*.js', 'playwright.config.js', 'eslint.config.js'],
     languageOptions: {
       ecmaVersion: 2022,

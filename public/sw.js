@@ -1,4 +1,4 @@
-const CACHE_NAME = 'aeroprompter-v5';
+const CACHE_NAME = 'aeroprompter-v6';
 
 // Core app shell — refreshed in the background on every visit so deploys
 // reach returning users without a cache-name bump.
@@ -11,7 +11,8 @@ const SHELL_PATHS = new Set([
   '/js/storage.js',
   '/js/editor.js',
   '/js/prompter.js',
-  '/js/voice.js'
+  '/js/voice.js',
+  '/js/analytics.js'
 ]);
 
 const PRECACHE = [
@@ -24,6 +25,7 @@ const PRECACHE = [
   '/js/editor.js',
   '/js/prompter.js',
   '/js/voice.js',
+  '/js/analytics.js',
   '/imprint.html',
   '/privacy.html',
   '/cookie-policy.html',
