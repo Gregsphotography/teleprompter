@@ -212,11 +212,21 @@ function scrollToWordIndex(index) {
   state.currentWordIndex = index;
   setActiveWordHighlight(index);
 
-  // Compute target Y coordinate to position active word on the focus line
+  // Compute target Y coordinate to position active word on the focus line.
+  // Every word on a line shares one `top`, so the target is nudged along by how
+  // far across the line the word sits: the viewport creeps steadily rather than
+  // holding still and then lurching a full line height at each wrap. Sweeping a
+  // full lineAdvance across the line makes the target continuous — the end of
+  // one line lands exactly on the start of the next — and leaves the word
+  // straddling the focus line by half a line either way, which is why the
+  // half-word-height centring term is no longer needed.
   const wordOffset = state.wordOffsets[index];
   if (wordOffset) {
     const viewportHeight = DOM.prompterViewport.clientHeight;
-    state.targetScrollY = wordOffset.top - (viewportHeight * getFocusPositionRatio()) + (wordOffset.height / 2);
+    const lineProgress = wordOffset.lineFraction * wordOffset.lineAdvance;
+    state.targetScrollY = Math.max(0,
+      wordOffset.top + lineProgress - (viewportHeight * getFocusPositionRatio())
+    );
   }
 }
 

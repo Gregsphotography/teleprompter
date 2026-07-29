@@ -76,6 +76,43 @@ test('auto-scroll launches after countdown and pause/play keeps a stable rate', 
   await expect(page.locator('#dashboard-view')).toHaveClass(/active/);
 });
 
+test('colourblind highlight never re-wraps the paragraph', async ({ page }) => {
+  await page.locator('label.switch:has(#config-colorblind-mode)').click();
+  await expect(page.locator('#config-colorblind-mode')).toBeChecked();
+
+  // Keep the text still so geometry is measured against a stationary viewport
+  await page.locator('label.switch:has(#config-auto-start)').click();
+  await expect(page.locator('#config-auto-start')).not.toBeChecked();
+
+  await page.click('#btn-launch');
+  await expect(page.locator('.prompter-word').first()).toBeVisible();
+
+  const measure = () => page.evaluate(() =>
+    Array.from(document.querySelectorAll('.prompter-word'))
+      .map(el => [el.offsetTop, el.offsetLeft, el.offsetWidth])
+  );
+
+  const before = await measure();
+  expect(before.length).toBeGreaterThan(10);
+
+  // Highlight the last word of a line — the one a wider box would push onto
+  // the next line — and confirm no word anywhere moved.
+  const highlightedIndex = await page.evaluate(() => {
+    const words = Array.from(document.querySelectorAll('.prompter-word'));
+    const index = words.findIndex((el, i) =>
+      words[i + 1] && words[i + 1].offsetTop > el.offsetTop);
+    if (index === -1) return -1;
+    words[index].classList.add('current-word');
+    void document.body.offsetHeight; // force layout
+    return index;
+  });
+
+  expect(highlightedIndex).toBeGreaterThan(-1);
+  expect(await measure()).toEqual(before);
+
+  await page.keyboard.press('Escape');
+});
+
 test('export produces valid JSON and import round-trips', async ({ page }) => {
   const downloadPromise = page.waitForEvent('download');
   await page.click('#btn-export-scripts');

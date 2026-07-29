@@ -168,6 +168,11 @@ export function launchTeleprompter() {
   setTimeout(() => {
     calculateWordOffsets();
   }, 300);
+
+  // Re-measure once webfonts settle, so the cache isn't pinned to fallback metrics
+  document.fonts?.ready.then(() => {
+    if (DOM.prompterView.classList.contains('active')) calculateWordOffsets();
+  });
   
   // 4. Start appropriate engine
   state.scrollMode = isVoiceScrollEnabled(script) ? 'voice' : 'auto';
@@ -435,17 +440,57 @@ export function tokenizeScriptText(text) {
 
 export function calculateWordOffsets() {
   if (state.wordElements.length === 0) return;
-  
+
   // Cache word coordinates in memory for highly optimized reading loops
   state.wordOffsets = state.wordElements.map(el => {
     return {
       top: el.offsetTop,
       height: el.clientHeight,
-      paragraph: el.closest('.prompter-paragraph')
+      left: el.offsetLeft,
+      width: el.offsetWidth,
+      paragraph: el.closest('.prompter-paragraph'),
+      lineFraction: 0, // 0..1 position of this word across its rendered line
+      lineAdvance: 0   // px from this line's top to the next line's top
     };
   });
 
+  computeLineProgress();
   computeAutoScrollRate();
+}
+
+// Words are inline-block spans with no line elements, so a "line" is just a run
+// of consecutive words sharing an offsetTop. Recording how far across its line
+// each word sits lets voice scrolling advance continuously instead of holding
+// still for a whole line and then lurching a full line height at the wrap.
+function computeLineProgress() {
+  const offsets = state.wordOffsets;
+  const lineStarts = [];
+
+  for (let i = 0; i < offsets.length; i++) {
+    if (i === 0 || offsets[i].top !== offsets[i - 1].top) lineStarts.push(i);
+  }
+
+  let previousAdvance = 0;
+
+  lineStarts.forEach((start, lineIndex) => {
+    const end = lineIndex + 1 < lineStarts.length ? lineStarts[lineIndex + 1] : offsets.length;
+    const last = offsets[end - 1];
+    const lineLeft = offsets[start].left;
+    const span = Math.max(1, last.left + last.width - lineLeft);
+
+    // Real delta to the next line, so the 2.5em paragraph gap is crossed
+    // just as smoothly as an ordinary wrap.
+    const advance = end < offsets.length
+      ? offsets[end].top - offsets[start].top
+      : (previousAdvance || offsets[start].height);
+    previousAdvance = advance;
+
+    for (let i = start; i < end; i++) {
+      const centre = offsets[i].left + (offsets[i].width / 2) - lineLeft;
+      offsets[i].lineFraction = Math.min(1, Math.max(0, centre / span));
+      offsets[i].lineAdvance = advance;
+    }
+  });
 }
 
 function isMobilePrompterViewport() {
