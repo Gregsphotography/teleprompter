@@ -5,7 +5,11 @@ our own EU server, writes to a SQLite file that is not reachable from the web,
 and involves no third party at any point.
 
 It exists to answer one question — *how many people use this?* — without
-sending anything to Vercel Analytics, Google, or any hosted platform.
+sending anything to Google, Vercel Analytics, or any hosted platform.
+
+It runs on the same Hetzner box that serves the site, reached through two nginx
+`location` blocks, so the beacon is same-origin with aeroprompter.app. No
+subdomain, no DNS change, no CORS, no CSP change.
 
 ## What it stores
 
@@ -39,9 +43,12 @@ install, nothing to keep patched. Node 22 prints an experimental warning for
 
 ## Deploying
 
-1. **DNS** — point `stats.aeroprompter.app` at the server.
+No DNS changes and no new subdomain: the tracker runs on the same Hetzner box
+that already serves aeroprompter.app, and nginx proxies two paths to it. That
+makes the beacon same-origin, so there is no CORS, no preflight, and no CSP
+change.
 
-2. **Create the service account and copy the files:**
+1. **Create the service account and copy the files:**
 
    ```sh
    sudo useradd --system --no-create-home --shell /usr/sbin/nologin aeroprompter
@@ -49,7 +56,7 @@ install, nothing to keep patched. Node 22 prints an experimental warning for
    sudo cp tracker/server.mjs tracker/stats.mjs /opt/aeroprompter-tracker/
    ```
 
-3. **Configure:**
+2. **Configure:**
 
    ```sh
    sudo cp tracker/.env.example /etc/aeroprompter-tracker.env
@@ -57,7 +64,7 @@ install, nothing to keep patched. Node 22 prints an experimental warning for
    sudoedit /etc/aeroprompter-tracker.env
    ```
 
-4. **Install the unit:**
+3. **Install the unit:**
 
    ```sh
    sudo cp tracker/aeroprompter-tracker.service /etc/systemd/system/
@@ -70,30 +77,48 @@ install, nothing to keep patched. Node 22 prints an experimental warning for
    owned by the `aeroprompter` user with mode `0700`. No other service on the
    box can read the database, and you reach it with `sudo -u aeroprompter`.
 
-5. **Front it with Caddy** — append `tracker/Caddyfile.example` to
-   `/etc/caddy/Caddyfile`, set the dashboard password (see "Reading the
-   numbers" below), then `sudo systemctl reload caddy`. Caddy handles TLS, sets
-   `X-Forwarded-For`, exposes `/hit` and `/health` publicly, and puts
-   `/dashboard` behind basic auth. Everything else 404s.
+4. **Set the dashboard password:**
+
+   ```sh
+   sudo apt install apache2-utils                      # provides htpasswd
+   sudo htpasswd -c /etc/nginx/aeroprompter-stats.htpasswd greg
+   sudo chown www-data:www-data /etc/nginx/aeroprompter-stats.htpasswd
+   sudo chmod 640 /etc/nginx/aeroprompter-stats.htpasswd
+   ```
+
+   Use whatever username you like in place of `greg` and update
+   `nginx.example.conf` to match if you change the file path.
+
+5. **Add the nginx routes** — in Forge, open the aeroprompter.app site →
+   **Edit Files → Edit Nginx Configuration**, paste the contents of
+   `tracker/nginx.example.conf` inside the existing `server { … }` block, and
+   save. Forge reloads nginx for you.
+
+   Both locations use `=` (exact match), which in nginx beats any prefix
+   location, so an existing `location /api/` or `location /` cannot shadow
+   them.
 
 6. **Verify:**
 
    ```sh
-   curl https://stats.aeroprompter.app/health          # -> ok
-   curl -i https://stats.aeroprompter.app/dashboard    # -> 401 without credentials
-   ss -lntp | grep 8787                                # -> 127.0.0.1:8787 only
-   sudo ls -l /var/lib/aeroprompter/hits.db            # -> -rw-------
+   ss -lntp | grep 8787                                 # -> 127.0.0.1:8787 only
+   sudo ls -l /var/lib/aeroprompter/hits.db             # -> -rw-------
+   curl -i https://aeroprompter.app/stats               # -> 401 before credentials
+   curl -s -o /dev/null -w '%{http_code}\n' \
+     -X POST https://aeroprompter.app/api/hit \
+     -H 'Content-Type: text/plain' -d '{"path":"/"}'    # -> 204
    ```
 
-   Then load https://aeroprompter.app in a browser and check a row appeared.
+   Then load https://aeroprompter.app in a browser and check the count went up.
 
 ## Reading the numbers
 
 ### In a browser
 
-<https://stats.aeroprompter.app/dashboard>, behind HTTP basic auth. Summary
-cards (today / 7 days / 30 days / all time), a 30-day chart, and top pages and
-referrers. Works on a phone.
+<https://aeroprompter.app/stats>, behind HTTP basic auth — your browser will
+prompt for the username and password from step 4. It's a browser popup, not a
+login form. Summary cards (today / 7 days / 30 days / all time), a 30-day
+chart, and top pages and referrers. Works on a phone.
 
 The page is server-rendered and fully self-contained: no scripts, no external
 requests, no fonts, `Cache-Control: no-store`, `noindex`, and a
@@ -101,25 +126,21 @@ requests, no fonts, `Cache-Control: no-store`, `noindex`, and a
 numbers are. Values coming from visitors' browsers (paths, referrer hosts) are
 HTML-escaped on the way out.
 
-Set the password up once:
+To change the password later, re-run `htpasswd` without `-c` (which would
+overwrite the file):
 
 ```sh
-caddy hash-password                       # prompts, prints a bcrypt hash
-sudo tee /etc/caddy/dashboard.env <<< 'AEROPROMPTER_DASHBOARD_HASH=$2a$14$...'
-sudo chmod 600 /etc/caddy/dashboard.env
-sudo systemctl edit caddy                 # add EnvironmentFile=/etc/caddy/dashboard.env
-sudo systemctl restart caddy
+sudo htpasswd /etc/nginx/aeroprompter-stats.htpasswd greg
 ```
 
-The hash lives in that env file rather than the Caddyfile so it never reaches
-version control. Change the username from `greg` in `Caddyfile.example` if you
-want something else.
+The credentials live in `/etc/nginx/aeroprompter-stats.htpasswd` on the server,
+never in this repository.
 
 ### On the command line
 
 The database lives at `/var/lib/aeroprompter/hits.db`, owned by the
 `aeroprompter` user with mode `0700` on the directory. It is not served by
-Caddy and not reachable over HTTP. SSH to the server, then:
+nginx and not reachable over HTTP. SSH to the server, then:
 
 ```sh
 sudo -u aeroprompter node /opt/aeroprompter-tracker/stats.mjs
@@ -206,7 +227,7 @@ part that carries the obligations.
 
 ## Removing it
 
-Stop the service, drop the Caddy block, delete `/var/lib/aeroprompter`, then
-remove the `initAnalytics()` call in `public/app.js`, the `connect-src` entry in
-`vercel.json`, and the visitor-counting paragraphs in `public/privacy.html` and
-`public/cookie-policy.html`.
+Stop the service, remove the two `location` blocks from the nginx config,
+delete `/var/lib/aeroprompter` and the htpasswd file, then remove the
+`initAnalytics()` call in `public/app.js` and the visitor-counting paragraphs in
+`public/privacy.html` and `public/cookie-policy.html`. No CSP change to undo.
