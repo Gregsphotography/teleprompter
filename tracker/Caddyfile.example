@@ -22,7 +22,9 @@ stats.aeroprompter.app {
 	#
 	# Keeping the hash out of the Caddyfile keeps it out of version control.
 	# On Caddy older than 2.7 this directive is spelled `basicauth`.
-	handle /dashboard {
+	# The trailing * also matches /dashboard/, which browsers add readily —
+	# without it that URL falls through to the 404 below and looks broken.
+	handle /dashboard* {
 		basic_auth {
 			greg {$AEROPROMPTER_DASHBOARD_HASH}
 		}
