@@ -75,11 +75,28 @@ export function triggerHUDVisibility() {
   }
 }
 
+// Every scroll the engines drive goes through here so handleViewportScroll can
+// tell our own writes apart from the reader's finger.
+export function applyViewportScroll(y) {
+  DOM.prompterViewport.scrollTop = Math.round(y);
+  // Read back: the browser clamps to [0, scrollHeight - clientHeight] and the
+  // scroll event we are about to ignore carries that clamped value.
+  state.lastProgrammaticScrollTop = DOM.prompterViewport.scrollTop;
+}
+
 function handleViewportScroll() {
+  const scrollTop = DOM.prompterViewport.scrollTop;
+
+  // Our own scroll writes must not touch the physics. Voice mode moves the
+  // viewport every frame, and resyncing on those events collapsed the target
+  // back onto the current position, so the scroll stalled a step after each
+  // spoken phrase and the reading point sank towards the bottom of the screen.
+  if (Math.abs(scrollTop - state.lastProgrammaticScrollTop) <= 1) return;
+
   // If the user manually scrolls, synchronize our physics variables to avoid jumping stutters
   if (!state.isPlaying || state.scrollMode === 'voice') {
-    state.currentScrollY = DOM.prompterViewport.scrollTop;
-    state.targetScrollY = DOM.prompterViewport.scrollTop;
+    state.currentScrollY = scrollTop;
+    state.targetScrollY = scrollTop;
   }
 }
 
@@ -158,12 +175,17 @@ export function launchTeleprompter() {
   requestWakeLock();
   
   // Reset scroll metrics
-  DOM.prompterViewport.scrollTop = 0;
+  applyViewportScroll(0);
   state.currentScrollY = 0;
   state.targetScrollY = 0;
   state.currentWordIndex = 0;
   resetParagraphTopAlignment();
-  
+
+  // The view is on screen now, so the reading band and scroll range are already
+  // measurable — the engines can start before the 300ms offset pass lands.
+  computeReadingBandMetrics();
+  applyFocusPosition();
+
   // Calculate offsets for precise LERP/Voice tracking
   setTimeout(() => {
     calculateWordOffsets();
@@ -266,7 +288,7 @@ export function restartTeleprompter() {
   state.targetScrollY = 0;
   state.currentWordIndex = 0;
   resetParagraphTopAlignment();
-  DOM.prompterViewport.scrollTop = 0;
+  applyViewportScroll(0);
 
   // Clear word highlights
   clearWordHighlights();
@@ -347,17 +369,32 @@ export function getPrompterLayoutMetrics(script) {
   };
 }
 
-export function applyFocusPosition(percent) {
-  DOM.prompterView.style.setProperty('--focus-position', `${percent}%`);
+// Phones get their own reading line: at a desktop-sized 50% the large mobile
+// type leaves only three or four lines visible ahead of the reader.
+export function getEffectiveFocusPosition() {
+  const script = getActiveScript();
+  const configured = isMobilePrompterViewport()
+    ? (script?.mobileFocusPosition ?? 40)
+    : (script?.focusPosition || 50);
+
+  // The configured line may never sit inside the reserved bottom band, or the
+  // reading floor would spend the whole script fighting it.
+  const viewportHeight = DOM.prompterViewport.clientHeight;
+  if (!state.readingFloorY || !viewportHeight) return configured;
+
+  return Math.min(configured, (state.readingFloorY / viewportHeight) * 100);
+}
+
+export function applyFocusPosition() {
+  DOM.prompterView.style.setProperty('--focus-position', `${getEffectiveFocusPosition()}%`);
 }
 
 export function getFocusPositionRatio() {
-  const script = getActiveScript();
-  return (script?.focusPosition || 50) / 100;
+  return getEffectiveFocusPosition() / 100;
 }
 
 export function applyPromptSizingConfigs(script) {
-  applyFocusPosition(script.focusPosition || 50);
+  applyFocusPosition();
 
   // Clear layout properties
   DOM.prompterTextBody.className = 'prompter-text-body';
@@ -456,6 +493,25 @@ export function calculateWordOffsets() {
 
   computeLineProgress();
   computeAutoScrollRate();
+  computeReadingBandMetrics();
+
+  // The floor can pull the effective reading line up, so refresh the drawn guide
+  applyFocusPosition();
+}
+
+// The deepest point on screen the active word may reach. Below this it is under
+// the HUD or the browser's bottom chrome and the reader has nothing left to read
+// ahead. Cached like the auto-scroll rate so the RAF loops never read layout.
+export function computeReadingBandMetrics() {
+  const viewportHeight = DOM.prompterViewport.clientHeight;
+
+  // The HUD wraps to several rows on a phone, so measure it rather than guess
+  const hudReserve = (DOM.hudWrapper.offsetHeight || 0) + 24;
+  const lineHeight = parseFloat(window.getComputedStyle(DOM.prompterTextBody).lineHeight) || 0;
+  const reserved = Math.max(hudReserve + lineHeight, viewportHeight * 0.2);
+
+  state.readingFloorY = Math.max(viewportHeight * 0.5, viewportHeight - reserved);
+  state.maxScrollY = Math.max(0, DOM.prompterViewport.scrollHeight - viewportHeight);
 }
 
 // Words are inline-block spans with no line elements, so a "line" is just a run
@@ -560,6 +616,9 @@ export function setupResponsiveLayoutListeners() {
       if (!script || !DOM.prompterView.classList.contains('active')) return;
 
       applyPromptSizingConfigs(script);
+      // Recomputes the reading band and re-applies the focus line, so crossing
+      // the mobile breakpoint (or Safari's URL bar changing dvh) keeps the drawn
+      // guide and the computed reading point together.
       calculateWordOffsets();
       state.currentScrollY = DOM.prompterViewport.scrollTop;
       state.targetScrollY = DOM.prompterViewport.scrollTop;
@@ -605,7 +664,7 @@ function renderAutoScrollTicker(timestamp, loopId) {
   // LERP transition for ultra smooth, non-choppy tracking
   state.currentScrollY += (state.targetScrollY - state.currentScrollY) * 0.12;
 
-  DOM.prompterViewport.scrollTop = Math.round(state.currentScrollY);
+  applyViewportScroll(state.currentScrollY);
 
   // Identify and highlight active reading paragraphs based on scroll viewport position
   highlightActiveWordByScrollPosition();
