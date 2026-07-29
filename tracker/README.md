@@ -71,13 +71,16 @@ install, nothing to keep patched. Node 22 prints an experimental warning for
    box can read the database, and you reach it with `sudo -u aeroprompter`.
 
 5. **Front it with Caddy** — append `tracker/Caddyfile.example` to
-   `/etc/caddy/Caddyfile`, then `sudo systemctl reload caddy`. Caddy handles
-   TLS, sets `X-Forwarded-For`, and exposes only `/hit` and `/health`.
+   `/etc/caddy/Caddyfile`, set the dashboard password (see "Reading the
+   numbers" below), then `sudo systemctl reload caddy`. Caddy handles TLS, sets
+   `X-Forwarded-For`, exposes `/hit` and `/health` publicly, and puts
+   `/dashboard` behind basic auth. Everything else 404s.
 
 6. **Verify:**
 
    ```sh
    curl https://stats.aeroprompter.app/health          # -> ok
+   curl -i https://stats.aeroprompter.app/dashboard    # -> 401 without credentials
    ss -lntp | grep 8787                                # -> 127.0.0.1:8787 only
    sudo ls -l /var/lib/aeroprompter/hits.db            # -> -rw-------
    ```
@@ -85,6 +88,34 @@ install, nothing to keep patched. Node 22 prints an experimental warning for
    Then load https://aeroprompter.app in a browser and check a row appeared.
 
 ## Reading the numbers
+
+### In a browser
+
+<https://stats.aeroprompter.app/dashboard>, behind HTTP basic auth. Summary
+cards (today / 7 days / 30 days / all time), a 30-day chart, and top pages and
+referrers. Works on a phone.
+
+The page is server-rendered and fully self-contained: no scripts, no external
+requests, no fonts, `Cache-Control: no-store`, `noindex`, and a
+`default-src 'none'` CSP. The database is never exposed — only these rendered
+numbers are. Values coming from visitors' browsers (paths, referrer hosts) are
+HTML-escaped on the way out.
+
+Set the password up once:
+
+```sh
+caddy hash-password                       # prompts, prints a bcrypt hash
+sudo tee /etc/caddy/dashboard.env <<< 'AEROPROMPTER_DASHBOARD_HASH=$2a$14$...'
+sudo chmod 600 /etc/caddy/dashboard.env
+sudo systemctl edit caddy                 # add EnvironmentFile=/etc/caddy/dashboard.env
+sudo systemctl restart caddy
+```
+
+The hash lives in that env file rather than the Caddyfile so it never reaches
+version control. Change the username from `greg` in `Caddyfile.example` if you
+want something else.
+
+### On the command line
 
 The database lives at `/var/lib/aeroprompter/hits.db`, owned by the
 `aeroprompter` user with mode `0700` on the directory. It is not served by

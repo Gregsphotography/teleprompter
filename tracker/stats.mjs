@@ -13,6 +13,7 @@
    ========================================================================== */
 
 import { DatabaseSync } from 'node:sqlite';
+import { dailyRows, topPaths, topReferrers, totals } from './queries.mjs';
 
 const DB_PATH = process.env.TRACKER_DB || '/var/lib/aeroprompter/hits.db';
 
@@ -67,24 +68,15 @@ function printTable(rows, columns) {
 }
 
 if (args.includes('--total')) {
-  const totals = db.prepare(`
-    SELECT COUNT(*) AS pageviews,
-           COUNT(DISTINCT day || visitor) AS daily_visitors,
-           MIN(day) AS first_day,
-           MAX(day) AS last_day
-    FROM hits
-  `).get();
+  const summary = totals(db);
 
   console.log('\nAll time');
-  console.log(`  Pageviews:          ${totals.pageviews ?? 0}`);
+  console.log(`  Pageviews:          ${summary.pageviews ?? 0}`);
   // Hashes are per-day by design, so this counts visitor-days, not people.
-  console.log(`  Visitor-days:       ${totals.daily_visitors ?? 0}`);
-  console.log(`  Range:              ${totals.first_day || 'n/a'} to ${totals.last_day || 'n/a'}\n`);
+  console.log(`  Visitor-days:       ${summary.visitors ?? 0}`);
+  console.log(`  Range:              ${summary.first_day || 'n/a'} to ${summary.last_day || 'n/a'}\n`);
 } else if (args.includes('--paths')) {
-  const rows = db.prepare(`
-    SELECT path, COUNT(*) AS pageviews, COUNT(DISTINCT day || visitor) AS visitors
-    FROM hits GROUP BY path ORDER BY pageviews DESC LIMIT ?
-  `).all(limit);
+  const rows = topPaths(db, limit);
 
   console.log(`\nTop paths (limit ${limit})\n`);
   printTable(rows, [
@@ -94,11 +86,7 @@ if (args.includes('--total')) {
   ]);
   console.log('');
 } else if (args.includes('--referrers')) {
-  const rows = db.prepare(`
-    SELECT referrer_host AS host, COUNT(*) AS pageviews
-    FROM hits WHERE referrer_host IS NOT NULL
-    GROUP BY referrer_host ORDER BY pageviews DESC LIMIT ?
-  `).all(limit);
+  const rows = topReferrers(db, limit);
 
   console.log(`\nTop referrers (limit ${limit})\n`);
   printTable(rows, [
@@ -107,10 +95,7 @@ if (args.includes('--total')) {
   ]);
   console.log('');
 } else {
-  const rows = db.prepare(`
-    SELECT day, COUNT(DISTINCT visitor) AS visitors, COUNT(*) AS pageviews
-    FROM hits GROUP BY day ORDER BY day DESC LIMIT ?
-  `).all(days);
+  const rows = dailyRows(db, days);
 
   console.log(`\nLast ${days} days\n`);
   printTable(rows, [
