@@ -43,81 +43,56 @@ install, nothing to keep patched. Node 22 prints an experimental warning for
 
 ## Deploying
 
-No DNS changes and no new subdomain: the tracker runs on the same Hetzner box
-that already serves aeroprompter.app, and nginx proxies two paths to it. That
-makes the beacon same-origin, so there is no CORS, no preflight, and no CSP
-change.
+One command on the server:
 
-1. **Create the service account and copy the files:**
+```sh
+cd /home/forge/aeroprompter.app        # wherever Forge checked the repo out
+sudo bash tracker/install.sh
+```
 
-   ```sh
-   sudo useradd --system --no-create-home --shell /usr/sbin/nologin aeroprompter
-   sudo mkdir -p /opt/aeroprompter-tracker
-   sudo cp tracker/server.mjs tracker/stats.mjs /opt/aeroprompter-tracker/
-   ```
+It checks prerequisites, creates the service account, installs the files and
+the systemd unit, starts the service, prompts for a dashboard password, and
+writes an nginx snippet. Safe to re-run — it will not reset your password or
+overwrite your config.
 
-2. **Configure:**
+Then **one line** in Forge (aeroprompter.app → Edit Files → Edit Nginx
+Configuration), inside the existing `server { ... }` block:
 
-   ```sh
-   sudo cp tracker/.env.example /etc/aeroprompter-tracker.env
-   sudo chmod 600 /etc/aeroprompter-tracker.env
-   sudoedit /etc/aeroprompter-tracker.env
-   ```
+```nginx
+include /etc/nginx/aeroprompter-tracker.conf;
+```
 
-3. **Install the unit:**
+Save; Forge reloads nginx. Done — <https://aeroprompter.app/stats>.
 
-   ```sh
-   sudo cp tracker/aeroprompter-tracker.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now aeroprompter-tracker
-   systemctl status aeroprompter-tracker
-   ```
+### If the installer stops
 
-   `StateDirectory=aeroprompter` makes systemd create `/var/lib/aeroprompter`
-   owned by the `aeroprompter` user with mode `0700`. No other service on the
-   box can read the database, and you reach it with `sudo -u aeroprompter`.
+It fails loudly with the reason rather than half-installing. The most common
+one by far:
 
-4. **Set the dashboard password:**
+**"Node X is too old"** — the tracker needs Node 22.5+ for the built-in
+`node:sqlite`. Forge boxes often ship 18 or 20. Fix:
 
-   ```sh
-   sudo apt install apache2-utils                      # provides htpasswd
-   sudo htpasswd -c /etc/nginx/aeroprompter-stats.htpasswd greg
-   sudo chown www-data:www-data /etc/nginx/aeroprompter-stats.htpasswd
-   sudo chmod 640 /etc/nginx/aeroprompter-stats.htpasswd
-   ```
+```sh
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+```
 
-   Use whatever username you like in place of `greg` and update
-   `nginx.example.conf` to match if you change the file path.
+**"Node is not installed, or not on root's PATH"** — Forge installs Node for
+the deploy user, not always for root:
 
-5. **Add the nginx routes** — in Forge, open the aeroprompter.app site →
-   **Edit Files → Edit Nginx Configuration**, paste the contents of
-   `tracker/nginx.example.conf` inside the existing `server { … }` block, and
-   save. Forge reloads nginx for you.
+```sh
+sudo ln -s $(which node) /usr/bin/node
+```
 
-   Both locations use `=` (exact match), which in nginx beats any prefix
-   location, so an existing `location /api/` or `location /` cannot shadow
-   them.
-
-6. **Verify:**
-
-   ```sh
-   ss -lntp | grep 8787                                 # -> 127.0.0.1:8787 only
-   sudo ls -l /var/lib/aeroprompter/hits.db             # -> -rw-------
-   curl -i https://aeroprompter.app/stats               # -> 401 before credentials
-   curl -s -o /dev/null -w '%{http_code}\n' \
-     -X POST https://aeroprompter.app/api/hit \
-     -H 'Content-Type: text/plain' -d '{"path":"/"}'    # -> 204
-   ```
-
-   Then load https://aeroprompter.app in a browser and check the count went up.
+Anything else: `journalctl -u aeroprompter-tracker -n 30`
 
 ## Reading the numbers
 
 ### In a browser
 
 <https://aeroprompter.app/stats>, behind HTTP basic auth — your browser will
-prompt for the username and password from step 4. It's a browser popup, not a
-login form. Summary cards (today / 7 days / 30 days / all time), a 30-day
+prompt for the username and password the installer asked you to choose. It's a
+browser popup, not a login form. Summary cards (today / 7 days / 30 days / all time), a 30-day
 chart, and top pages and referrers. Works on a phone.
 
 The page is server-rendered and fully self-contained: no scripts, no external
@@ -126,11 +101,11 @@ requests, no fonts, `Cache-Control: no-store`, `noindex`, and a
 numbers are. Values coming from visitors' browsers (paths, referrer hosts) are
 HTML-escaped on the way out.
 
-To change the password later, re-run `htpasswd` without `-c` (which would
-overwrite the file):
+To change the password later, delete the file and re-run the installer:
 
 ```sh
-sudo htpasswd /etc/nginx/aeroprompter-stats.htpasswd greg
+sudo rm /etc/nginx/aeroprompter-stats.htpasswd
+sudo bash tracker/install.sh
 ```
 
 The credentials live in `/etc/nginx/aeroprompter-stats.htpasswd` on the server,
@@ -227,7 +202,16 @@ part that carries the obligations.
 
 ## Removing it
 
-Stop the service, remove the two `location` blocks from the nginx config,
-delete `/var/lib/aeroprompter` and the htpasswd file, then remove the
-`initAnalytics()` call in `public/app.js` and the visitor-counting paragraphs in
-`public/privacy.html` and `public/cookie-policy.html`. No CSP change to undo.
+Remove the `include` line from the nginx config, then:
+
+```sh
+sudo systemctl disable --now aeroprompter-tracker
+sudo rm -rf /opt/aeroprompter-tracker /var/lib/aeroprompter \
+  /etc/aeroprompter-tracker.env /etc/systemd/system/aeroprompter-tracker.service \
+  /etc/nginx/aeroprompter-tracker.conf /etc/nginx/aeroprompter-stats.htpasswd
+sudo userdel aeroprompter
+```
+
+Then in this repo, remove the `initAnalytics()` call in `public/app.js` and the
+visitor-counting paragraphs in `public/privacy.html` and
+`public/cookie-policy.html`. There is no CSP change to undo.
