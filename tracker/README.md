@@ -41,9 +41,10 @@ install, nothing to keep patched. Node 22 prints an experimental warning for
 
 1. **DNS** — point `stats.aeroprompter.app` at the server.
 
-2. **Copy the service:**
+2. **Create the service account and copy the files:**
 
    ```sh
+   sudo useradd --system --no-create-home --shell /usr/sbin/nologin aeroprompter
    sudo mkdir -p /opt/aeroprompter-tracker
    sudo cp tracker/server.mjs tracker/stats.mjs /opt/aeroprompter-tracker/
    ```
@@ -65,9 +66,9 @@ install, nothing to keep patched. Node 22 prints an experimental warning for
    systemctl status aeroprompter-tracker
    ```
 
-   `DynamicUser=yes` plus `StateDirectory=aeroprompter` means systemd creates
-   `/var/lib/aeroprompter` owned by a transient unprivileged user. No other
-   service on the box can read the database.
+   `StateDirectory=aeroprompter` makes systemd create `/var/lib/aeroprompter`
+   owned by the `aeroprompter` user with mode `0700`. No other service on the
+   box can read the database, and you reach it with `sudo -u aeroprompter`.
 
 5. **Front it with Caddy** — append `tracker/Caddyfile.example` to
    `/etc/caddy/Caddyfile`, then `sudo systemctl reload caddy`. Caddy handles
@@ -85,13 +86,16 @@ install, nothing to keep patched. Node 22 prints an experimental warning for
 
 ## Reading the numbers
 
-Over SSH, on the server. This is the only way to read the data.
+The database lives at `/var/lib/aeroprompter/hits.db`, owned by the
+`aeroprompter` user with mode `0700` on the directory. It is not served by
+Caddy and not reachable over HTTP. SSH to the server, then:
 
 ```sh
-sudo -u $(systemctl show -p User --value aeroprompter-tracker) \
-  TRACKER_DB=/var/lib/aeroprompter/hits.db \
-  node /opt/aeroprompter-tracker/stats.mjs
+sudo -u aeroprompter node /opt/aeroprompter-tracker/stats.mjs
 ```
+
+`stats.mjs` defaults to `/var/lib/aeroprompter/hits.db`, so no environment
+variable is needed. `sudo node …` as root works too.
 
 ```
 node stats.mjs              # last 30 days: visitors + pageviews per day
@@ -100,6 +104,48 @@ node stats.mjs --total      # all-time totals
 node stats.mjs --paths      # most visited paths
 node stats.mjs --referrers  # where visitors came from
 ```
+
+Add a shell alias so you never have to remember the path:
+
+```sh
+echo "alias aerostats='sudo -u aeroprompter node /opt/aeroprompter-tracker/stats.mjs'" \
+  >> ~/.bashrc
+```
+
+### Ad-hoc SQL
+
+`stats.mjs` is read-only and covers the usual questions, but the file is a
+plain SQLite database — query it however you like. The examples below use the
+`sqlite3` CLI, which is not installed by default (`sudo apt install sqlite3`);
+the tracker itself does not need it.
+
+```sh
+sudo -u aeroprompter sqlite3 /var/lib/aeroprompter/hits.db \
+  "SELECT day, COUNT(DISTINCT visitor) FROM hits GROUP BY day ORDER BY day DESC LIMIT 7;"
+```
+
+Open it read-only if you just want to look, so a stray `UPDATE` can't touch the
+data:
+
+```sh
+sudo -u aeroprompter sqlite3 -readonly /var/lib/aeroprompter/hits.db
+```
+
+### Pulling a copy to your laptop
+
+The database is in WAL mode, so take a consistent snapshot with `.backup`
+rather than `cp` — a plain copy can catch a torn write:
+
+```sh
+ssh you@server "sudo -u aeroprompter sqlite3 /var/lib/aeroprompter/hits.db \
+  \".backup /tmp/hits-snapshot.db\" && sudo chown \$USER /tmp/hits-snapshot.db"
+scp you@server:/tmp/hits-snapshot.db .
+ssh you@server "rm /tmp/hits-snapshot.db"
+node tracker/stats.mjs   # with TRACKER_DB=./hits-snapshot.db
+```
+
+Remember the snapshot is a second copy of the data — delete it when you're
+done rather than leaving it in Downloads.
 
 ## Backups
 

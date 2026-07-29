@@ -9,10 +9,11 @@ EnvironmentFile=/etc/aeroprompter-tracker.env
 Restart=always
 RestartSec=5
 
-# Runs as a transient unprivileged user; /var/lib/aeroprompter is created and
-# owned by it automatically, which is what keeps the database off the web and
-# away from every other service on the box.
-DynamicUser=yes
+# A dedicated unprivileged account owns the data. Deliberately not
+# DynamicUser=yes: that would relocate the database under /var/lib/private,
+# which only root can traverse, and leave no stable account to read it as.
+User=aeroprompter
+Group=aeroprompter
 StateDirectory=aeroprompter
 StateDirectoryMode=0700
 
